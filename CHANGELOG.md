@@ -1,3 +1,17 @@
+# [1.1.0](https://github.com/jwu/pi-webfetch/compare/v1.0.0...v1.1.0) (2026-05-20)
+
+
+### Bug Fixes
+
+* format GitHub tree fetch results ([e0b5829](https://github.com/jwu/pi-webfetch/commit/e0b582925f91cfb9bf6a520d81bc59f168c08878))
+* retry scrapling strategy on defuddle failure ([e13984c](https://github.com/jwu/pi-webfetch/commit/e13984ca88004e14861fbda9cff445105750cfc2))
+
+
+### Features
+
+* add optional webfetch quality judge ([2078607](https://github.com/jwu/pi-webfetch/commit/2078607692af5e37d3fd3c203fa8c0d3aa91aa16))
+* route GitHub URLs through gh ([c23f61d](https://github.com/jwu/pi-webfetch/commit/c23f61dd77736403e1caad6505b405916c501751))
+
 # 1.0.0 (2026-05-20)
 
 
