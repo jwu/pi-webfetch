@@ -1,0 +1,26 @@
+# pi project shared config (extensions, settings etc. committed to repo)
+# Only ignore runtime cache
+.pi/
+
+# Node/JS local dependencies & cache
+node_modules/
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# System generated files
+.DS_Store
+**/.DS_Store
+Thumbs.db
+**/Thumbs.db
+Desktop.ini
+**/Desktop.ini
+
+# Editor & temp files
+*.swp
+*.swo
+*~
+.npmrc
+.husky/_/
