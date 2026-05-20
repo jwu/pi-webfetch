@@ -136,9 +136,16 @@ function emitToolProgress(
   });
 }
 
-function countLines(text: string): number {
-  if (!text) return 0;
-  return text.split('\n').length;
+function formatPipeline(details: WebFetchDetails): string {
+  if (details.mode === 'markdown') {
+    return details.converter === 'defuddle' ? 'markdown via defuddle' : 'markdown via scrapling';
+  }
+  return `${details.mode} via scrapling`;
+}
+
+function formatFailedAttempts(count: number): string | undefined {
+  if (count === 0) return undefined;
+  return `${count} ${count === 1 ? 'attempt' : 'attempts'}`;
 }
 
 function formatRenderSummary(details: WebFetchDetails, theme: any): string {
@@ -147,8 +154,9 @@ function formatRenderSummary(details: WebFetchDetails, theme: any): string {
       details.phase === 'failed'
         ? theme.fg('warning', details.phase)
         : theme.fg('accent', details.phase);
-    const strategy = details.currentStrategy ? ` ${details.currentStrategy}` : '';
-    return `${theme.fg('toolTitle', theme.bold('scrapling'))} ${phase}${theme.fg('dim', strategy)} ${theme.fg('muted', details.message ?? '')}`;
+    const cli = theme.fg('customMessageLabel', 'scrapling');
+    const strategy = details.currentStrategy ? theme.fg('dim', ` ${details.currentStrategy}`) : '';
+    return `${phase}: ${cli}${strategy}`;
   }
 
   const status =
@@ -156,19 +164,33 @@ function formatRenderSummary(details: WebFetchDetails, theme: any): string {
       ? theme.fg('error', 'failed')
       : theme.fg('success', 'done');
   const pieces = [
-    details.strategy ? `fetcher=${details.strategy}` : undefined,
-    `mode=${details.mode}`,
-    details.scraplingMode && details.scraplingMode !== details.mode
-      ? `scrapling=${details.scraplingMode}`
-      : undefined,
-    `converter=${details.converter}`,
-    details.contentLength !== undefined ? formatSize(details.contentLength) : undefined,
+    details.strategy,
+    formatPipeline(details),
+    details.truncation?.truncated ? 'truncated' : undefined,
+    formatFailedAttempts(details.errors.length),
   ].filter(Boolean);
 
-  let text = `${status} ${theme.fg('dim', pieces.join(' · '))}`;
-  if (details.truncation?.truncated) text += theme.fg('warning', ' (truncated)');
-  if (details.errors.length > 0) text += theme.fg('warning', ` · ${details.errors.length} retry`);
-  return text;
+  return pieces.length > 0 ? `${status} ${theme.fg('dim', pieces.join(' | '))}` : status;
+}
+
+function formatTreeLines(lines: string[], theme: any): string {
+  return lines
+    .map((line, index) => {
+      const branch = index === lines.length - 1 ? '└─ ' : '├─ ';
+      return theme.fg('dim', branch) + line;
+    })
+    .join('\n');
+}
+
+function renderOutputLines(output: string, theme: any): string[] {
+  return output.split('\n').map((line) => theme.fg('toolOutput', line));
+}
+
+function getCollapsedPreviewOutput(output: string): string {
+  if (!output.startsWith('URL: ')) return output;
+  const bodyStart = output.indexOf('\n\n');
+  if (bodyStart === -1) return output;
+  return output.slice(bodyStart + 2);
 }
 
 function renderWebFetchResult(
@@ -179,27 +201,41 @@ function renderWebFetchResult(
   const details = result.details as WebFetchDetails | undefined;
   if (!details) return new Text(theme.fg('error', 'webfetch: missing details'), 0, 0);
 
-  let text = formatRenderSummary(details, theme);
+  const summaryLines = [formatRenderSummary(details, theme)];
   const output = result.content[0]?.type === 'text' ? (result.content[0].text ?? '') : '';
 
   if (options.isPartial) {
     if (details.errors.length > 0) {
       const last = details.errors.at(-1);
-      if (last) text += `\n${theme.fg('warning', `${last.strategy}: ${last.error}`)}`;
+      if (last) summaryLines.push(theme.fg('warning', `${last.strategy}: ${last.error}`));
     }
-    return new Text(text, 0, 0);
+    return new Text(formatTreeLines(summaryLines, theme), 0, 0);
   }
+
+  const size = details.contentLength !== undefined ? formatSize(details.contentLength) : undefined;
+  if (size) summaryLines[0] += theme.fg('muted', ` | ${size}`);
+
+  let text = formatTreeLines(summaryLines, theme);
 
   if (!options.expanded) {
-    const lines = countLines(output);
-    if (lines > 0) text += theme.fg('muted', ` · ${lines} lines, ctrl+o to expand`);
-    if (details.fullOutputPath) {
-      text += `\n${theme.fg('dim', `full output: ${details.fullOutputPath}`)}`;
+    if (output) {
+      const previewOutput = getCollapsedPreviewOutput(output);
+      const rawLines = previewOutput.split('\n');
+      const renderedLines = renderOutputLines(previewOutput, theme);
+      const maxPreviewLines = 20;
+      const previewLines = renderedLines.slice(0, maxPreviewLines);
+      const remaining = rawLines.length - previewLines.length;
+      text += `\n\n${previewLines.join('\n')}`;
+
+      if (remaining > 0) {
+        text += theme.fg('muted', `\n... (${remaining} more lines, ctrl+o to expand)`);
+      }
     }
+
     return new Text(text, 0, 0);
   }
 
-  if (output) text += `\n${theme.fg('toolOutput', output)}`;
+  if (output) text += `\n\n${renderOutputLines(output, theme).join('\n')}`;
   return new Text(text, 0, 0);
 }
 

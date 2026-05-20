@@ -40,6 +40,17 @@ function mockTheme() {
   };
 }
 
+function markerTheme() {
+  return {
+    fg(color: string, text: string) {
+      return `[${color}]${text}[/${color}]`;
+    },
+    bold(text: string) {
+      return `<b>${text}</b>`;
+    },
+  };
+}
+
 describe('webfetch extension', () => {
   it('registers the webfetch tool', () => {
     const tools: Array<ReturnType<typeof createWebFetchTool>> = [];
@@ -270,8 +281,60 @@ describe('webfetch extension', () => {
     );
   });
 
+  it('renders partial progress as tree status lines', async () => {
+    const tool = createWebFetchTool(fakeRunner());
+    const theme = markerTheme();
+    const partial = {
+      content: [{ type: 'text', text: 'webfetch https://example.com\ntrying fetcher' }],
+      details: {
+        url: 'https://example.com',
+        mode: 'markdown',
+        scraplingMode: 'markdown',
+        converter: 'scrapling',
+        useDefuddle: false,
+        phase: 'trying',
+        currentStrategy: 'fetcher',
+        message: 'trying fetcher',
+        errors: [],
+      },
+    };
+
+    const rendered = tool.renderResult(partial, { expanded: false, isPartial: true }, theme);
+    const text = rendered
+      .render(1000)
+      .map((line) => line.trimEnd())
+      .join('\n');
+
+    assert.match(
+      text,
+      /^\[dim\]└─ \[\/dim\]\[accent\]trying\[\/accent\]: \[customMessageLabel\]scrapling\[\/customMessageLabel\]\[dim\] fetcher\[\/dim\]/,
+    );
+  });
+
+  it('renders body output with toolOutput color rather than markdown highlighting', async () => {
+    const tool = createWebFetchTool(fakeRunner('# Heading\n\n**bold**'));
+    const theme = markerTheme();
+    const result = await tool.execute(
+      'call-1',
+      { url: 'https://example.com' },
+      undefined,
+      undefined,
+      { cwd: process.cwd() },
+    );
+
+    const collapsed = tool.renderResult(result, { expanded: false, isPartial: false }, theme);
+    const text = collapsed
+      .render(1000)
+      .map((line) => line.trimEnd())
+      .join('\n');
+
+    assert.match(text, /\[toolOutput\]# Heading\[\/toolOutput\]/);
+    assert.match(text, /\[toolOutput\]\*\*bold\*\*\[\/toolOutput\]/);
+  });
+
   it('renders compact call and expandable result output', async () => {
-    const tool = createWebFetchTool(fakeRunner('line 1\nline 2\nline 3'));
+    const longOutput = Array.from({ length: 80 }, (_, index) => `line ${index + 1}`).join('\n');
+    const tool = createWebFetchTool(fakeRunner(longOutput));
     const theme = mockTheme();
 
     const call = tool.renderCall({ url: 'https://example.com', mode: 'markdown' }, theme);
@@ -286,11 +349,25 @@ describe('webfetch extension', () => {
     );
 
     const collapsed = tool.renderResult(result, { expanded: false, isPartial: false }, theme);
-    assert.match(collapsed.render(120).join('\n'), /done/);
-    assert.doesNotMatch(collapsed.render(120).join('\n'), /line 2/);
+    const collapsedText = collapsed
+      .render(1000)
+      .map((line) => line.trimEnd())
+      .join('\n');
+    assert.match(collapsedText, /^└─ done fetcher \| markdown via scrapling \| \d+B/m);
+    assert.match(collapsedText, /\n\nline 1/);
+    assert.match(collapsedText, /line 20/);
+    assert.doesNotMatch(collapsedText, /line 21/);
+    assert.doesNotMatch(collapsedText, /├─ line 1/);
+    assert.match(collapsedText, /\.\.\. \(60 more lines, ctrl\+o to expand\)/);
 
     const expanded = tool.renderResult(result, { expanded: true, isPartial: false }, theme);
-    assert.match(expanded.render(120).join('\n'), /line 2/);
+    const expandedText = expanded
+      .render(1000)
+      .map((line) => line.trimEnd())
+      .join('\n');
+    assert.match(expandedText, /^└─ done fetcher \| markdown via scrapling \| \d+B/m);
+    assert.match(expandedText, /\n\nURL: https:\/\/example\.com/);
+    assert.match(expandedText, /line 80/);
   });
 
   it('returns an error result when Scrapling fails', async () => {
