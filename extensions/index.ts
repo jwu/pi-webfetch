@@ -1,49 +1,426 @@
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import {
+  DEFAULT_MAX_BYTES,
+  DEFAULT_MAX_LINES,
+  formatSize,
+  truncateHead,
+  type AgentToolUpdateCallback,
+  type TruncationResult,
+} from '@earendil-works/pi-coding-agent';
+import { Text } from '@earendil-works/pi-tui';
 import { Type } from 'typebox';
+
+import {
+  DEFAULT_MODE,
+  convertHtmlWithDefuddle,
+  normalizeMode,
+  persistFullContent,
+  readWebFetchSettings,
+  runScraplingFetch,
+  type ExtractionMode,
+  type FetchStrategy,
+  type ScraplingFetchOptions,
+  type ScraplingFetchResult,
+  type WebFetchProgress,
+  type WebFetchSettings,
+} from './utils.js';
 
 const WebFetchParams = Type.Object({
   url: Type.String({
-    description:
-      'URL to inspect and fetch. The implementation will decide the best fetching strategy.',
+    description: 'HTTP or HTTPS URL to inspect and fetch with Scrapling.',
   }),
+  mode: Type.Optional(
+    Type.Union([Type.Literal('markdown'), Type.Literal('html'), Type.Literal('text')]),
+  ),
 });
 
 export interface WebFetchInput {
   url: string;
+  mode?: ExtractionMode;
 }
 
 export interface WebFetchDetails {
   url: string;
-  status: 'scaffold';
+  finalUrl?: string;
+  status?: number | string | null;
+  strategy?: string;
+  strategyReason?: string;
+  mode: ExtractionMode;
+  scraplingMode?: ExtractionMode;
+  converter: 'scrapling' | 'defuddle';
+  useDefuddle: boolean;
+  phase?: WebFetchProgress['phase'] | 'converting' | 'done';
+  currentStrategy?: FetchStrategy;
+  message?: string;
+  contentLength?: number;
+  fullOutputPath?: string;
+  truncation?: TruncationResult;
+  errors: ScraplingFetchResult['errors'];
 }
 
-export default function (pi: ExtensionAPI) {
-  pi.registerTool({
+export type WebFetchRunner = (options: ScraplingFetchOptions) => Promise<ScraplingFetchResult>;
+export type DefuddleConverter = (html: string, url: string) => Promise<string>;
+export type SettingsReader = (cwd: string) => WebFetchSettings;
+
+function extensionForMode(mode: ExtractionMode): string {
+  if (mode === 'html') return 'html';
+  if (mode === 'text') return 'txt';
+  return 'md';
+}
+
+function formatErrors(errors: ScraplingFetchResult['errors']): string {
+  if (errors.length === 0) return 'No Scrapling error details were returned.';
+  return errors.map((error) => `- ${error.strategy}: ${error.error}`).join('\n');
+}
+
+function formatSuccess(
+  result: ScraplingFetchResult,
+  content: string,
+  options: {
+    converter: WebFetchDetails['converter'];
+    useDefuddle: boolean;
+    scraplingMode?: ExtractionMode;
+    fullOutputPath?: string;
+  },
+): string {
+  const header = [
+    `URL: ${result.finalUrl ?? result.url}`,
+    result.status !== undefined && result.status !== null ? `Status: ${result.status}` : undefined,
+    result.strategy ? `Fetcher: ${result.strategy}` : undefined,
+    result.strategyReason ? `Strategy: ${result.strategyReason}` : undefined,
+    `Mode: ${result.mode}`,
+    options.scraplingMode && options.scraplingMode !== result.mode
+      ? `Scrapling-Mode: ${options.scraplingMode}`
+      : undefined,
+    `Converter: ${options.converter}`,
+    result.contentLength !== undefined ? `Content-Length: ${result.contentLength}` : undefined,
+    options.fullOutputPath ? `Full output: ${options.fullOutputPath}` : undefined,
+  ].filter((line): line is string => Boolean(line));
+
+  return `${header.join('\n')}\n\n${content}`;
+}
+
+function formatFailure(result: ScraplingFetchResult): string {
+  const stderr = result.stderr?.trim();
+  const hint = [
+    'Scrapling fetch failed.',
+    '',
+    'Tried fetcher strategy order from the Scrapling guide. Make sure Scrapling is available via:',
+    '',
+    '  scrapling shell -L warning -c "print(\'ok\')"',
+    '',
+    'Errors:',
+    formatErrors(result.errors),
+  ];
+
+  if (stderr) {
+    hint.push('', 'stderr:', stderr.slice(0, 4000));
+  }
+
+  return hint.join('\n');
+}
+
+function emitToolProgress(
+  onUpdate: AgentToolUpdateCallback<WebFetchDetails> | undefined,
+  params: WebFetchInput,
+  details: WebFetchDetails,
+) {
+  onUpdate?.({
+    content: [
+      {
+        type: 'text' as const,
+        text: `webfetch ${params.url}\n${details.message ?? details.phase ?? 'running'}`,
+      },
+    ],
+    details,
+  });
+}
+
+function countLines(text: string): number {
+  if (!text) return 0;
+  return text.split('\n').length;
+}
+
+function formatRenderSummary(details: WebFetchDetails, theme: any): string {
+  if (details.phase && details.phase !== 'done') {
+    const phase =
+      details.phase === 'failed'
+        ? theme.fg('warning', details.phase)
+        : theme.fg('accent', details.phase);
+    const strategy = details.currentStrategy ? ` ${details.currentStrategy}` : '';
+    return `${theme.fg('toolTitle', theme.bold('scrapling'))} ${phase}${theme.fg('dim', strategy)} ${theme.fg('muted', details.message ?? '')}`;
+  }
+
+  const status =
+    details.errors.length > 0 && !details.strategy
+      ? theme.fg('error', 'failed')
+      : theme.fg('success', 'done');
+  const pieces = [
+    details.strategy ? `fetcher=${details.strategy}` : undefined,
+    `mode=${details.mode}`,
+    details.scraplingMode && details.scraplingMode !== details.mode
+      ? `scrapling=${details.scraplingMode}`
+      : undefined,
+    `converter=${details.converter}`,
+    details.contentLength !== undefined ? formatSize(details.contentLength) : undefined,
+  ].filter(Boolean);
+
+  let text = `${status} ${theme.fg('dim', pieces.join(' · '))}`;
+  if (details.truncation?.truncated) text += theme.fg('warning', ' (truncated)');
+  if (details.errors.length > 0) text += theme.fg('warning', ` · ${details.errors.length} retry`);
+  return text;
+}
+
+function renderWebFetchResult(
+  result: { content: Array<{ type: string; text?: string }>; details?: unknown },
+  options: { expanded: boolean; isPartial: boolean },
+  theme: any,
+): Text {
+  const details = result.details as WebFetchDetails | undefined;
+  if (!details) return new Text(theme.fg('error', 'webfetch: missing details'), 0, 0);
+
+  let text = formatRenderSummary(details, theme);
+  const output = result.content[0]?.type === 'text' ? (result.content[0].text ?? '') : '';
+
+  if (options.isPartial) {
+    if (details.errors.length > 0) {
+      const last = details.errors.at(-1);
+      if (last) text += `\n${theme.fg('warning', `${last.strategy}: ${last.error}`)}`;
+    }
+    return new Text(text, 0, 0);
+  }
+
+  if (!options.expanded) {
+    const lines = countLines(output);
+    if (lines > 0) text += theme.fg('muted', ` · ${lines} lines, ctrl+o to expand`);
+    if (details.fullOutputPath) {
+      text += `\n${theme.fg('dim', `full output: ${details.fullOutputPath}`)}`;
+    }
+    return new Text(text, 0, 0);
+  }
+
+  if (output) text += `\n${theme.fg('toolOutput', output)}`;
+  return new Text(text, 0, 0);
+}
+
+export function createWebFetchTool(
+  runner: WebFetchRunner = runScraplingFetch,
+  settingsReader: SettingsReader = readWebFetchSettings,
+  defuddleConverter: DefuddleConverter = convertHtmlWithDefuddle,
+) {
+  return {
     name: 'webfetch',
     label: 'Web Fetch',
     description:
-      'Inspect a user-provided URL and fetch its information with an appropriate CLI-backed strategy. This package currently registers the tool scaffold only; fetching and cleanup strategies will be added incrementally.',
+      'Inspect a user-provided HTTP(S) URL and fetch its content with Scrapling. The tool chooses a Scrapling fetcher strategy based on the URL, then extracts cleaned markdown/html/text content with Scrapling Convertor.',
     promptSnippet:
-      'Inspect and fetch information from a user-provided URL using the appropriate strategy.',
+      'Fetch and clean information from HTTP(S) URLs using Scrapling fetcher strategies.',
     promptGuidelines: [
       'Use webfetch when the user provides a URL and asks to inspect, fetch, read, summarize, or analyze its content.',
-      'The current webfetch implementation is a scaffold; report that fetching behavior is not implemented yet instead of inventing fetched content.',
+      'webfetch uses Scrapling through `scrapling shell`; if Scrapling is unavailable, report the tool error and do not invent fetched content.',
+      'webfetch defaults to markdown extraction. Use mode="html" only when raw cleaned HTML is needed, and mode="text" for plain text.',
+      'When settings.json has { "webfetch": { "useDefuddle": true } }, webfetch asks Scrapling for cleaned HTML and converts it to Markdown with Defuddle for markdown output.',
     ],
     parameters: WebFetchParams,
 
-    async execute(_toolCallId, params: WebFetchInput) {
+    async execute(
+      _toolCallId: string,
+      params: WebFetchInput,
+      signal: AbortSignal | undefined,
+      onUpdate: AgentToolUpdateCallback<WebFetchDetails> | undefined,
+      ctx: { cwd: string },
+    ) {
+      const mode = normalizeMode(params.mode ?? DEFAULT_MODE);
+      const settings = settingsReader(ctx.cwd);
+      const useDefuddle = settings.useDefuddle && mode === 'markdown';
+      const scraplingMode: ExtractionMode = useDefuddle ? 'html' : mode;
+      let converter: WebFetchDetails['converter'] = 'scrapling';
+      emitToolProgress(onUpdate, params, {
+        url: params.url,
+        mode,
+        scraplingMode,
+        converter,
+        useDefuddle,
+        phase: 'starting',
+        message: 'starting webfetch',
+        errors: [],
+      });
+      let result = await runner({
+        url: params.url,
+        mode: scraplingMode,
+        cwd: ctx.cwd,
+        signal,
+        onProgress: (progress) => {
+          emitToolProgress(onUpdate, params, {
+            url: params.url,
+            mode,
+            scraplingMode,
+            converter,
+            useDefuddle,
+            phase: progress.phase,
+            currentStrategy: progress.strategy,
+            message: progress.message,
+            errors: progress.errors ?? [],
+          });
+        },
+      });
+
+      if (!result.ok || !result.content) {
+        return {
+          content: [{ type: 'text' as const, text: formatFailure(result) }],
+          details: {
+            url: result.url,
+            finalUrl: result.finalUrl,
+            status: result.status,
+            strategy: result.strategy,
+            strategyReason: result.strategyReason,
+            mode,
+            scraplingMode,
+            converter,
+            useDefuddle,
+            contentLength: result.contentLength,
+            errors: result.errors,
+          } as WebFetchDetails,
+          isError: true as const,
+        };
+      }
+
+      if (useDefuddle) {
+        emitToolProgress(onUpdate, params, {
+          url: result.url,
+          finalUrl: result.finalUrl,
+          status: result.status,
+          strategy: result.strategy,
+          strategyReason: result.strategyReason,
+          mode,
+          scraplingMode,
+          converter: 'defuddle',
+          useDefuddle,
+          phase: 'converting',
+          currentStrategy: result.strategy,
+          message: 'converting cleaned HTML with Defuddle',
+          contentLength: result.contentLength,
+          errors: result.errors,
+        });
+        try {
+          const content = await defuddleConverter(result.content, result.finalUrl ?? result.url);
+          converter = 'defuddle';
+          result = {
+            ...result,
+            mode: 'markdown',
+            content,
+            contentLength: content.length,
+          };
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          const failedResult: ScraplingFetchResult = {
+            ...result,
+            ok: false,
+            mode: 'markdown',
+            errors: [...result.errors, { strategy: 'defuddle', error: errorMessage }],
+          };
+          return {
+            content: [{ type: 'text' as const, text: formatFailure(failedResult) }],
+            details: {
+              url: failedResult.url,
+              finalUrl: failedResult.finalUrl,
+              status: failedResult.status,
+              strategy: failedResult.strategy,
+              strategyReason: failedResult.strategyReason,
+              mode: 'markdown',
+              scraplingMode,
+              converter: 'defuddle',
+              useDefuddle,
+              contentLength: failedResult.contentLength,
+              errors: failedResult.errors,
+            } as WebFetchDetails,
+            isError: true as const,
+          };
+        }
+      }
+
+      if (typeof result.content !== 'string') {
+        return {
+          content: [{ type: 'text' as const, text: formatFailure(result) }],
+          details: {
+            url: result.url,
+            finalUrl: result.finalUrl,
+            status: result.status,
+            strategy: result.strategy,
+            strategyReason: result.strategyReason,
+            mode: result.mode,
+            scraplingMode,
+            converter,
+            useDefuddle,
+            contentLength: result.contentLength,
+            errors: result.errors,
+          } as WebFetchDetails,
+          isError: true as const,
+        };
+      }
+
+      const resultContent = result.content;
+      const truncation = truncateHead(resultContent, {
+        maxLines: DEFAULT_MAX_LINES,
+        maxBytes: DEFAULT_MAX_BYTES,
+      });
+
+      let content = truncation.content;
+      let fullOutputPath: string | undefined;
+
+      if (truncation.truncated) {
+        fullOutputPath = await persistFullContent(resultContent, extensionForMode(result.mode));
+        content += `\n\n[Output truncated: showing ${truncation.outputLines} of ${truncation.totalLines} lines (${formatSize(truncation.outputBytes)} of ${formatSize(truncation.totalBytes)}). Full output saved to: ${fullOutputPath}]`;
+      }
+
       return {
         content: [
           {
-            type: 'text',
-            text: `webfetch is registered, but fetching is not implemented yet. URL received: ${params.url}`,
+            type: 'text' as const,
+            text: formatSuccess(result, content, {
+              converter,
+              useDefuddle,
+              scraplingMode,
+              fullOutputPath,
+            }),
           },
         ],
         details: {
-          url: params.url,
-          status: 'scaffold',
-        } satisfies WebFetchDetails,
+          url: result.url,
+          finalUrl: result.finalUrl,
+          status: result.status,
+          strategy: result.strategy,
+          strategyReason: result.strategyReason,
+          mode: result.mode,
+          scraplingMode,
+          converter,
+          useDefuddle,
+          contentLength: result.contentLength,
+          fullOutputPath,
+          truncation,
+          phase: 'done',
+          errors: result.errors,
+        } as WebFetchDetails,
       };
     },
-  });
+
+    renderCall(args: WebFetchInput, theme: any) {
+      let text = theme.fg('toolTitle', theme.bold('webfetch '));
+      text += theme.fg('accent', args.url);
+      if (args.mode) text += theme.fg('dim', ` (${args.mode})`);
+      return new Text(text, 0, 0);
+    },
+
+    renderResult(
+      result: { content: Array<{ type: string; text?: string }>; details?: unknown },
+      options: { expanded: boolean; isPartial: boolean },
+      theme: any,
+    ) {
+      return renderWebFetchResult(result, options, theme);
+    },
+  };
+}
+
+export default function (pi: ExtensionAPI) {
+  pi.registerTool(createWebFetchTool());
 }
