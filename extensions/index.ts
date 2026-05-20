@@ -10,20 +10,18 @@ import {
 import { Text } from '@earendil-works/pi-tui';
 import { Type } from 'typebox';
 
+import { convertHtmlWithDefuddle } from './cli/defuddle.js';
+import { runScraplingFetch } from './cli/scrapling.js';
+import { normalizeMode, persistFullContent, readWebFetchSettings } from './shared.js';
 import {
   DEFAULT_MODE,
-  convertHtmlWithDefuddle,
-  normalizeMode,
-  persistFullContent,
-  readWebFetchSettings,
-  runScraplingFetch,
   type ExtractionMode,
   type FetchStrategy,
   type ScraplingFetchOptions,
   type ScraplingFetchResult,
   type WebFetchProgress,
   type WebFetchSettings,
-} from './utils.js';
+} from './types.js';
 
 const WebFetchParams = Type.Object({
   url: Type.String({
