@@ -65,30 +65,41 @@ function githubApiRoute(owner: string, repo: string, parts: string[], reason: st
   };
 }
 
-function blobApiRoute(owner: string, repo: string, parts: string[], kind: string): GitHubRoute {
+const GITHUB_TREE_JQ = String.raw`.[] | "- " + (if .type == "dir" then "dir" else "file" end) + " " + .path + (if .type == "file" and (.size != null) then " (" + (.size | tostring) + " bytes)" else "" end) + "\n  " + .html_url`;
+
+function contentsApiRoute(owner: string, repo: string, parts: string[], kind: string): GitHubRoute {
   const [ref, ...pathParts] = parts;
-  if (!ref || pathParts.length === 0) {
+  if (!ref || (kind !== 'tree' && pathParts.length === 0)) {
     return githubApiRoute(owner, repo, [kind, ...parts], 'GitHub URL matched; fetch with gh api.');
   }
 
+  const contentPath = pathParts.join('/');
+  const args = [
+    'api',
+    `repos/${owner}/${repo}/contents${contentPath ? `/${contentPath}` : ''}`,
+    '--method',
+    'GET',
+    '-f',
+    `ref=${ref}`,
+  ];
+
+  if (kind === 'tree') {
+    args.push('--jq', GITHUB_TREE_JQ);
+  } else {
+    args.push('-H', 'Accept: application/vnd.github.raw+json');
+  }
+
   return {
-    reason: `GitHub ${kind} URL matched; fetch file contents with gh api.`,
+    reason: `GitHub ${kind} URL matched; fetch ${kind === 'tree' ? 'directory listing with gh api --jq' : 'file contents with gh api'}.`,
     strategy: 'api',
-    args: [
-      'api',
-      `repos/${owner}/${repo}/contents/${pathParts.join('/')}`,
-      '--method',
-      'GET',
-      '-f',
-      `ref=${ref}`,
-      '-H',
-      'Accept: application/vnd.github.raw+json',
-    ],
+    args,
   };
 }
 
 function fallbackApiRoute(owner: string, repo: string, kind: string, rest: string[]): GitHubRoute {
-  if (kind === 'blob' || kind === 'raw') return blobApiRoute(owner, repo, rest, kind);
+  if (kind === 'blob' || kind === 'raw' || kind === 'tree') {
+    return contentsApiRoute(owner, repo, rest, kind);
+  }
   if (kind === 'commit' && rest[0]) {
     return githubApiRoute(
       owner,

@@ -232,6 +232,10 @@ describe('GitHub routing', () => {
       ghRouteForUrl('https://github.com/jwu/pi-webfetch/blob/main/README.md').strategy,
       'api',
     );
+    assert.equal(
+      ghRouteForUrl('https://github.com/jwu/pi-webfetch/tree/main/extensions').strategy,
+      'api',
+    );
 
     assert.deepEqual(ghRouteForUrl('https://github.com/jwu/pi-webfetch/commit/abc123').args, [
       'api',
@@ -247,6 +251,19 @@ describe('GitHub routing', () => {
       '-H',
       'Accept: application/vnd.github.raw+json',
     ]);
+    const treeRoute = ghRouteForUrl('https://github.com/jwu/pi-webfetch/tree/main/extensions');
+    assert.deepEqual(treeRoute.args.slice(0, 7), [
+      'api',
+      'repos/jwu/pi-webfetch/contents/extensions',
+      '--method',
+      'GET',
+      '-f',
+      'ref=main',
+      '--jq',
+    ]);
+    assert.match(treeRoute.args[7], /\.\[\]/);
+    assert.match(treeRoute.args[7], /\.path/);
+    assert.match(treeRoute.args[7], /\.html_url/);
   });
 });
 
