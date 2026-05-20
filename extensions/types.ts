@@ -47,6 +47,7 @@ export interface WebFetchOptions {
   mode?: ExtractionMode;
   cwd: string;
   signal?: AbortSignal;
+  strategies?: FetchStrategy[];
   onProgress?: (progress: WebFetchProgress) => void;
 }
 

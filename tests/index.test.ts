@@ -4,18 +4,21 @@ import assert from 'node:assert/strict';
 import webfetchExtension, { createWebFetchTool, type WebFetchRunner } from '../extensions/index.ts';
 
 function fakeRunner(content = '# Example\n\nFetched content'): WebFetchRunner {
-  return async ({ url, mode }) => ({
-    ok: true,
-    url,
-    finalUrl: url,
-    status: 200,
-    strategy: 'fetcher',
-    strategyReason: 'test strategy reason',
-    mode: mode ?? 'markdown',
-    content,
-    contentLength: content.length,
-    errors: [],
-  });
+  return async ({ url, mode, strategies }) => {
+    const strategy = strategies?.[0] ?? 'fetcher';
+    return {
+      ok: true,
+      url,
+      finalUrl: url,
+      status: 200,
+      strategy,
+      strategyReason: 'test strategy reason',
+      mode: mode ?? 'markdown',
+      content,
+      contentLength: content.length,
+      errors: [],
+    };
+  };
 }
 
 function failingRunner(): WebFetchRunner {
@@ -298,7 +301,67 @@ describe('webfetch extension', () => {
     assert.match(result.content[0].text, /<main>HTML<\/main>/);
   });
 
-  it('returns an error result when Defuddle conversion fails', async () => {
+  it('tries the next strategy when Defuddle conversion fails for one strategy', async () => {
+    const calls: string[] = [];
+    const runner: WebFetchRunner = async ({ url, mode, strategies }) => {
+      const strategy = strategies?.[0] ?? 'fetcher';
+      calls.push(strategy);
+      const content = `<article>${strategy}</article>`;
+      return {
+        ok: true,
+        url,
+        finalUrl: url,
+        status: 200,
+        strategy,
+        strategyReason: 'test strategy reason',
+        mode: mode ?? 'markdown',
+        content,
+        contentLength: content.length,
+        errors: [],
+      };
+    };
+
+    const tool = createWebFetchTool(
+      runner,
+      () => ({ useDefuddle: true }),
+      async (html) => {
+        if (html.includes('fetcher')) throw new Error('empty markdown');
+        return '# Dynamic content';
+      },
+    );
+
+    const result = await tool.execute(
+      'call-1',
+      { url: 'https://example.com' },
+      undefined,
+      undefined,
+      { cwd: process.cwd() },
+    );
+
+    assert.deepEqual(calls, ['fetcher', 'dynamic']);
+    assert.match(result.content[0].text, /Fetcher: dynamic/);
+    assert.match(result.content[0].text, /# Dynamic content/);
+    const details = result.details as unknown as Record<string, unknown>;
+    assert.equal((details.truncation as { truncated: boolean }).truncated, false);
+    delete details.truncation;
+    assert.deepEqual(details, {
+      url: 'https://example.com',
+      finalUrl: 'https://example.com',
+      status: 200,
+      strategy: 'dynamic',
+      strategyReason: 'test strategy reason',
+      mode: 'markdown',
+      scraplingMode: 'html',
+      converter: 'defuddle',
+      useDefuddle: true,
+      contentLength: '# Dynamic content'.length,
+      fullOutputPath: undefined,
+      phase: 'done',
+      errors: [{ strategy: 'fetcher', error: 'defuddle: empty markdown' }],
+    });
+  });
+
+  it('returns an error result when Defuddle conversion fails for every strategy', async () => {
     const tool = createWebFetchTool(
       fakeRunner('<article>HTML</article>'),
       () => ({ useDefuddle: true }),
@@ -322,7 +385,7 @@ describe('webfetch extension', () => {
       url: 'https://example.com',
       finalUrl: 'https://example.com',
       status: 200,
-      strategy: 'fetcher',
+      strategy: 'stealthy',
       strategyReason: 'test strategy reason',
       mode: 'markdown',
       scraplingMode: 'html',
@@ -330,8 +393,12 @@ describe('webfetch extension', () => {
       useDefuddle: true,
       contentLength: '<article>HTML</article>'.length,
       phase: 'failed',
-      currentStrategy: 'fetcher',
-      errors: [{ strategy: 'defuddle', error: 'defuddle exploded' }],
+      currentStrategy: 'stealthy',
+      errors: [
+        { strategy: 'fetcher', error: 'defuddle: defuddle exploded' },
+        { strategy: 'dynamic', error: 'defuddle: defuddle exploded' },
+        { strategy: 'stealthy', error: 'defuddle: defuddle exploded' },
+      ],
     });
   });
 

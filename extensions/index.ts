@@ -12,7 +12,7 @@ import { Type } from 'typebox';
 
 import { convertHtmlWithDefuddle } from './cli/defuddle.js';
 import { isGitHubUrl, runGhFetch } from './cli/gh.js';
-import { runScraplingFetch } from './cli/scrapling.js';
+import { runScraplingFetch, strategiesForUrl } from './cli/scrapling.js';
 import { normalizeMode, persistFullContent, readWebFetchSettings } from './shared.js';
 import {
   DEFAULT_MODE,
@@ -256,6 +256,123 @@ function renderWebFetchResult(
   return new Text(text, 0, 0);
 }
 
+async function runWithDefuddlePerStrategy(options: {
+  runner: WebFetchRunner;
+  defuddleConverter: DefuddleConverter;
+  params: WebFetchInput;
+  cwd: string;
+  signal?: AbortSignal;
+  onUpdate?: AgentToolUpdateCallback<WebFetchDetails>;
+}): Promise<WebFetchResultLike> {
+  const strategies = strategiesForUrl(options.params.url);
+  const accumulatedErrors: WebFetchErrorDetail[] = [];
+  let lastResult: WebFetchResultLike | undefined;
+
+  for (const strategy of strategies) {
+    const result = await options.runner({
+      url: options.params.url,
+      mode: 'html',
+      cwd: options.cwd,
+      signal: options.signal,
+      strategies: [strategy],
+      onProgress: (progress) => {
+        emitToolProgress(options.onUpdate, options.params, {
+          url: options.params.url,
+          mode: 'markdown',
+          scraplingMode: 'html',
+          converter: 'scrapling',
+          useDefuddle: true,
+          phase: progress.phase,
+          currentStrategy: progress.strategy,
+          message: progress.message,
+          errors: [...accumulatedErrors, ...(progress.errors ?? [])],
+        });
+      },
+    });
+
+    lastResult = result;
+
+    if (!result.ok || !result.content) {
+      accumulatedErrors.push(...result.errors);
+      continue;
+    }
+
+    emitToolProgress(options.onUpdate, options.params, {
+      url: result.url,
+      finalUrl: result.finalUrl,
+      status: result.status,
+      strategy: result.strategy,
+      strategyReason: result.strategyReason,
+      mode: 'markdown',
+      scraplingMode: 'html',
+      converter: 'defuddle',
+      useDefuddle: true,
+      phase: 'converting',
+      currentStrategy: result.strategy,
+      message: `converting cleaned HTML with Defuddle (${result.strategy ?? strategy})`,
+      contentLength: result.contentLength,
+      errors: accumulatedErrors,
+    });
+
+    try {
+      const content = await options.defuddleConverter(
+        result.content,
+        result.finalUrl ?? result.url,
+      );
+      return {
+        ...result,
+        ok: true,
+        mode: 'markdown',
+        content,
+        contentLength: content.length,
+        errors: [...accumulatedErrors, ...result.errors],
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const strategyName = result.strategy ?? strategy;
+      accumulatedErrors.push(...result.errors, {
+        strategy: strategyName,
+        error: `defuddle: ${errorMessage}`,
+      });
+      lastResult = {
+        ...result,
+        ok: false,
+        mode: 'markdown',
+        errors: accumulatedErrors,
+      };
+      emitToolProgress(options.onUpdate, options.params, {
+        url: result.url,
+        finalUrl: result.finalUrl,
+        status: result.status,
+        strategy: result.strategy,
+        strategyReason: result.strategyReason,
+        mode: 'markdown',
+        scraplingMode: 'html',
+        converter: 'defuddle',
+        useDefuddle: true,
+        phase: 'failed',
+        currentStrategy: strategyName,
+        message: `${strategyName} defuddle failed: ${errorMessage}`,
+        contentLength: result.contentLength,
+        errors: accumulatedErrors,
+      });
+    }
+  }
+
+  return {
+    ...(lastResult ?? {
+      ok: false,
+      url: options.params.url,
+      mode: 'markdown' as const,
+      errors: [] as WebFetchErrorDetail[],
+    }),
+    ok: false,
+    mode: 'markdown',
+    content: undefined,
+    errors: accumulatedErrors,
+  };
+}
+
 export function createWebFetchTool(
   runner: WebFetchRunner = runScraplingFetch,
   settingsReader: SettingsReader = readWebFetchSettings,
@@ -306,25 +423,39 @@ export function createWebFetchTool(
         message: 'starting webfetch',
         errors: [],
       });
-      let result = await selectedRunner({
-        url: params.url,
-        mode: selectedRunner === ghRunner ? mode : scraplingMode,
-        cwd: ctx.cwd,
-        signal,
-        onProgress: (progress) => {
-          emitToolProgress(onUpdate, params, {
-            url: params.url,
-            mode,
-            scraplingMode: detailScraplingMode,
-            converter,
-            useDefuddle,
-            phase: progress.phase,
-            currentStrategy: progress.strategy,
-            message: progress.message,
-            errors: progress.errors ?? [],
-          });
-        },
-      });
+      let result: WebFetchResultLike;
+
+      if (useDefuddle) {
+        converter = 'defuddle';
+        result = await runWithDefuddlePerStrategy({
+          runner: selectedRunner,
+          defuddleConverter,
+          params,
+          cwd: ctx.cwd,
+          signal,
+          onUpdate,
+        });
+      } else {
+        result = await selectedRunner({
+          url: params.url,
+          mode: selectedRunner === ghRunner ? mode : scraplingMode,
+          cwd: ctx.cwd,
+          signal,
+          onProgress: (progress) => {
+            emitToolProgress(onUpdate, params, {
+              url: params.url,
+              mode,
+              scraplingMode: detailScraplingMode,
+              converter,
+              useDefuddle,
+              phase: progress.phase,
+              currentStrategy: progress.strategy,
+              message: progress.message,
+              errors: progress.errors ?? [],
+            });
+          },
+        });
+      }
 
       if (!result.ok || !result.content) {
         return {
@@ -346,62 +477,6 @@ export function createWebFetchTool(
           } as WebFetchDetails,
           isError: true as const,
         };
-      }
-
-      if (useDefuddle) {
-        emitToolProgress(onUpdate, params, {
-          url: result.url,
-          finalUrl: result.finalUrl,
-          status: result.status,
-          strategy: result.strategy,
-          strategyReason: result.strategyReason,
-          mode,
-          scraplingMode,
-          converter: 'defuddle',
-          useDefuddle,
-          phase: 'converting',
-          currentStrategy: result.strategy,
-          message: 'converting cleaned HTML with Defuddle',
-          contentLength: result.contentLength,
-          errors: result.errors,
-        });
-        try {
-          const content = await defuddleConverter(result.content, result.finalUrl ?? result.url);
-          converter = 'defuddle';
-          result = {
-            ...result,
-            mode: 'markdown',
-            content,
-            contentLength: content.length,
-          };
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          const failedResult: WebFetchResultLike = {
-            ...result,
-            ok: false,
-            mode: 'markdown',
-            errors: [...result.errors, { strategy: 'defuddle', error: errorMessage }],
-          };
-          return {
-            content: [{ type: 'text' as const, text: formatFailure(failedResult) }],
-            details: {
-              url: failedResult.url,
-              finalUrl: failedResult.finalUrl,
-              status: failedResult.status,
-              strategy: failedResult.strategy,
-              strategyReason: failedResult.strategyReason,
-              mode: 'markdown',
-              scraplingMode: detailScraplingMode,
-              converter: 'defuddle',
-              useDefuddle,
-              contentLength: failedResult.contentLength,
-              phase: 'failed',
-              ...(failedResult.strategy ? { currentStrategy: failedResult.strategy } : {}),
-              errors: failedResult.errors,
-            } as WebFetchDetails,
-            isError: true as const,
-          };
-        }
       }
 
       if (typeof result.content !== 'string') {

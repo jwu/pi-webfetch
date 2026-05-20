@@ -214,7 +214,7 @@ export async function runScraplingFetch(
 ): Promise<ScraplingFetchResult> {
   const url = normalizeUrl(options.url);
   const mode = normalizeMode(options.mode);
-  const strategies = strategiesForUrl(url);
+  const strategies = options.strategies?.length ? options.strategies : strategiesForUrl(url);
   const strategyReason = strategyReasonForUrl(url);
   options.onProgress?.({
     phase: 'starting',
