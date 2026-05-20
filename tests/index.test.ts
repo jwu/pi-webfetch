@@ -55,16 +55,36 @@ function markerTheme() {
 }
 
 describe('webfetch extension', () => {
-  it('registers the webfetch tool', () => {
+  it('registers the webfetch tool and marks failed webfetch results as errors', () => {
     const tools: Array<ReturnType<typeof createWebFetchTool>> = [];
+    const toolResultHandlers: Array<(event: { toolName: string; details?: unknown }) => unknown> =
+      [];
 
     webfetchExtension({
       registerTool(tool: ReturnType<typeof createWebFetchTool>) {
         tools.push(tool);
       },
+      on(event: string, handler: (event: { toolName: string; details?: unknown }) => unknown) {
+        if (event === 'tool_result') toolResultHandlers.push(handler);
+      },
     } as never);
 
     assert.equal(tools.length, 1);
+    assert.equal(toolResultHandlers.length, 1);
+    assert.deepEqual(
+      toolResultHandlers[0]({ toolName: 'webfetch', details: { phase: 'failed' } }),
+      {
+        isError: true,
+      },
+    );
+    assert.equal(
+      toolResultHandlers[0]({ toolName: 'webfetch', details: { phase: 'done' } }),
+      undefined,
+    );
+    assert.equal(
+      toolResultHandlers[0]({ toolName: 'bash', details: { phase: 'failed' } }),
+      undefined,
+    );
     assert.equal(tools[0].name, 'webfetch');
     assert.equal(tools[0].label, 'Web Fetch');
     assert.match(tools[0].description, /Scrapling/);
@@ -165,6 +185,31 @@ describe('webfetch extension', () => {
     assert.doesNotMatch(result.content[0].text, /Scrapling \+ Defuddle/);
     assert.match(text, /^└─ failed: gh view repo/m);
     assert.doesNotMatch(text, /failed: gh gh/);
+  });
+
+  it('explains GitHub 404 failures as missing repo, ref, or path', async () => {
+    const ghRunner: WebFetchRunner = async ({ url, mode }) => ({
+      ok: false,
+      url,
+      strategy: 'api',
+      strategyReason: 'GitHub blob URL matched; fetch file contents with gh api.',
+      mode: mode ?? 'markdown',
+      errors: [{ strategy: 'api', error: 'gh command exited with code 1' }],
+      stderr: 'gh: Not Found (HTTP 404)',
+    });
+
+    const tool = createWebFetchTool(undefined, () => ({}), undefined, ghRunner);
+    const result = await tool.execute(
+      'call-1',
+      { url: 'https://github.com/0x676e67/wreq/blob/main/CHANGELOG.md' },
+      undefined,
+      undefined,
+      { cwd: process.cwd() },
+    );
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /owner\/repo, branch\/ref, and path exist/);
+    assert.doesNotMatch(result.content[0].text, /gh auth status/);
   });
 
   it('returns fetched Scrapling content from the runner', async () => {

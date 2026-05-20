@@ -136,6 +136,14 @@ function formatSuccess(
   return `${header.join('\n')}\n\n${content}`;
 }
 
+function formatGitHubFailureHint(stderr: string | undefined): string {
+  if (stderr?.includes('HTTP 404')) {
+    return 'GitHub URL matched, but GitHub returned HTTP 404. Check that the owner/repo, branch/ref, and path exist.';
+  }
+
+  return 'GitHub URL matched. Make sure GitHub CLI is installed and authenticated via `gh auth status`.';
+}
+
 function formatFailure(result: WebFetchResultLike): string {
   const stderr = result.stderr?.trim();
   const isGh = isGitHubUrl(result.url);
@@ -143,7 +151,7 @@ function formatFailure(result: WebFetchResultLike): string {
     'Web fetch failed.',
     '',
     isGh
-      ? 'GitHub URL matched. Make sure GitHub CLI is installed and authenticated via `gh auth status`.'
+      ? formatGitHubFailureHint(stderr)
       : 'Fallback fetch uses Scrapling + Defuddle. Make sure Scrapling is available via `scrapling shell -L warning -c "print(\'ok\')"`.',
     '',
     'Errors:',
@@ -770,6 +778,20 @@ export function createWebFetchTool(
   };
 }
 
+function isFailedWebFetchDetails(details: unknown): details is WebFetchDetails {
+  return Boolean(
+    details &&
+    typeof details === 'object' &&
+    (details as Partial<WebFetchDetails>).phase === 'failed',
+  );
+}
+
 export default function (pi: ExtensionAPI) {
   pi.registerTool(createWebFetchTool());
+
+  pi.on('tool_result', (event) => {
+    if (event.toolName !== 'webfetch') return;
+    if (!isFailedWebFetchDetails(event.details)) return;
+    return { isError: true };
+  });
 }
