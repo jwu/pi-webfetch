@@ -2,6 +2,7 @@ export const DEFAULT_MODE = 'markdown' as const;
 
 export type ExtractionMode = 'markdown' | 'html' | 'text';
 export type FetchStrategy = 'fetcher' | 'dynamic' | 'stealthy';
+export type FetcherName = FetchStrategy | 'gh';
 
 export interface SiteStrategyMapping {
   domains: string[];
@@ -9,42 +10,46 @@ export interface SiteStrategyMapping {
   reason: string;
 }
 
-export interface ScraplingError {
-  strategy: FetchStrategy | 'defuddle';
+export interface WebFetchError {
+  strategy: FetcherName | 'defuddle';
   error: string;
 }
 
 export interface WebFetchProgress {
   phase: 'starting' | 'trying' | 'extracting' | 'failed' | 'success';
-  strategy?: FetchStrategy;
+  strategy?: FetcherName;
   message: string;
-  errors?: ScraplingError[];
+  errors?: WebFetchError[];
 }
 
 export interface WebFetchSettings {
-  useDefuddle: boolean;
+  useDefuddle?: boolean;
 }
 
-export interface ScraplingFetchResult {
+export interface WebFetchResult {
   ok: boolean;
   url: string;
   finalUrl?: string;
   status?: number | string | null;
-  strategy?: FetchStrategy;
+  strategy?: FetcherName;
   strategyReason?: string;
   mode: ExtractionMode;
   content?: string;
   contentLength?: number;
   outputPath?: string;
-  errors: ScraplingError[];
+  errors: WebFetchError[];
   stdout?: string;
   stderr?: string;
 }
 
-export interface ScraplingFetchOptions {
+export interface WebFetchOptions {
   url: string;
   mode?: ExtractionMode;
   cwd: string;
   signal?: AbortSignal;
   onProgress?: (progress: WebFetchProgress) => void;
 }
+
+export type ScraplingError = WebFetchError;
+export type ScraplingFetchResult = WebFetchResult;
+export type ScraplingFetchOptions = WebFetchOptions;

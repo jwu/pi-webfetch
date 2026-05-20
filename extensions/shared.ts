@@ -58,7 +58,7 @@ export function readWebFetchSettings(cwd: string): WebFetchSettings {
   const globalUseDefuddle = extractUseDefuddle(readSettingsFile(getGlobalSettingsPath()));
   if (globalUseDefuddle !== undefined) return { useDefuddle: globalUseDefuddle };
 
-  return { useDefuddle: false };
+  return {};
 }
 
 export function normalizeUrl(rawUrl: string): string {

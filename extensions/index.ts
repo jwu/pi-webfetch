@@ -11,12 +11,12 @@ import { Text } from '@earendil-works/pi-tui';
 import { Type } from 'typebox';
 
 import { convertHtmlWithDefuddle } from './cli/defuddle.js';
+import { isGitHubUrl, runGhFetch } from './cli/gh.js';
 import { runScraplingFetch } from './cli/scrapling.js';
 import { normalizeMode, persistFullContent, readWebFetchSettings } from './shared.js';
 import {
   DEFAULT_MODE,
   type ExtractionMode,
-  type FetchStrategy,
   type ScraplingFetchOptions,
   type ScraplingFetchResult,
   type WebFetchProgress,
@@ -37,6 +37,19 @@ export interface WebFetchInput {
   mode?: ExtractionMode;
 }
 
+type WebFetchErrorDetail = { strategy: string; error: string };
+type WebFetchProgressUpdate = Omit<WebFetchProgress, 'strategy' | 'errors'> & {
+  strategy?: string;
+  errors?: WebFetchErrorDetail[];
+};
+type WebFetchResultLike = Omit<ScraplingFetchResult, 'strategy' | 'errors'> & {
+  strategy?: string;
+  errors: WebFetchErrorDetail[];
+};
+type WebFetchOptionsLike = Omit<ScraplingFetchOptions, 'onProgress'> & {
+  onProgress?: (progress: WebFetchProgressUpdate) => void;
+};
+
 export interface WebFetchDetails {
   url: string;
   finalUrl?: string;
@@ -45,18 +58,18 @@ export interface WebFetchDetails {
   strategyReason?: string;
   mode: ExtractionMode;
   scraplingMode?: ExtractionMode;
-  converter: 'scrapling' | 'defuddle';
+  converter: 'scrapling' | 'defuddle' | 'gh';
   useDefuddle: boolean;
   phase?: WebFetchProgress['phase'] | 'converting' | 'done';
-  currentStrategy?: FetchStrategy;
+  currentStrategy?: string;
   message?: string;
   contentLength?: number;
   fullOutputPath?: string;
   truncation?: TruncationResult;
-  errors: ScraplingFetchResult['errors'];
+  errors: WebFetchErrorDetail[];
 }
 
-export type WebFetchRunner = (options: ScraplingFetchOptions) => Promise<ScraplingFetchResult>;
+export type WebFetchRunner = (options: WebFetchOptionsLike) => Promise<WebFetchResultLike>;
 export type DefuddleConverter = (html: string, url: string) => Promise<string>;
 export type SettingsReader = (cwd: string) => WebFetchSettings;
 
@@ -66,13 +79,13 @@ function extensionForMode(mode: ExtractionMode): string {
   return 'md';
 }
 
-function formatErrors(errors: ScraplingFetchResult['errors']): string {
-  if (errors.length === 0) return 'No Scrapling error details were returned.';
+function formatErrors(errors: WebFetchErrorDetail[]): string {
+  if (errors.length === 0) return 'No fetch error details were returned.';
   return errors.map((error) => `- ${error.strategy}: ${error.error}`).join('\n');
 }
 
 function formatSuccess(
-  result: ScraplingFetchResult,
+  result: WebFetchResultLike,
   content: string,
   options: {
     converter: WebFetchDetails['converter'];
@@ -87,7 +100,7 @@ function formatSuccess(
     result.strategy ? `Fetcher: ${result.strategy}` : undefined,
     result.strategyReason ? `Strategy: ${result.strategyReason}` : undefined,
     `Mode: ${result.mode}`,
-    options.scraplingMode && options.scraplingMode !== result.mode
+    options.converter !== 'gh' && options.scraplingMode && options.scraplingMode !== result.mode
       ? `Scrapling-Mode: ${options.scraplingMode}`
       : undefined,
     `Converter: ${options.converter}`,
@@ -98,14 +111,15 @@ function formatSuccess(
   return `${header.join('\n')}\n\n${content}`;
 }
 
-function formatFailure(result: ScraplingFetchResult): string {
+function formatFailure(result: WebFetchResultLike): string {
   const stderr = result.stderr?.trim();
+  const isGh = isGitHubUrl(result.url);
   const hint = [
-    'Scrapling fetch failed.',
+    'Web fetch failed.',
     '',
-    'Tried fetcher strategy order from the Scrapling guide. Make sure Scrapling is available via:',
-    '',
-    '  scrapling shell -L warning -c "print(\'ok\')"',
+    isGh
+      ? 'GitHub URL matched. Make sure GitHub CLI is installed and authenticated via `gh auth status`.'
+      : 'Fallback fetch uses Scrapling + Defuddle. Make sure Scrapling is available via `scrapling shell -L warning -c "print(\'ok\')"`.',
     '',
     'Errors:',
     formatErrors(result.errors),
@@ -135,6 +149,7 @@ function emitToolProgress(
 }
 
 function formatPipeline(details: WebFetchDetails): string {
+  if (details.converter === 'gh') return `${details.mode} via gh`;
   if (details.mode === 'markdown') {
     return details.converter === 'defuddle' ? 'markdown via defuddle' : 'markdown via scrapling';
   }
@@ -152,8 +167,12 @@ function formatRenderSummary(details: WebFetchDetails, theme: any): string {
       details.phase === 'failed'
         ? theme.fg('warning', details.phase)
         : theme.fg('accent', details.phase);
-    const cli = theme.fg('customMessageLabel', 'scrapling');
-    const strategy = details.currentStrategy ? theme.fg('dim', ` ${details.currentStrategy}`) : '';
+    const cliName = details.converter === 'gh' ? 'gh' : 'scrapling';
+    const cli = theme.fg('customMessageLabel', cliName);
+    const strategy =
+      details.currentStrategy && details.currentStrategy !== cliName
+        ? theme.fg('dim', ` ${details.currentStrategy}`)
+        : '';
     return `${phase}: ${cli}${strategy}`;
   }
 
@@ -241,19 +260,20 @@ export function createWebFetchTool(
   runner: WebFetchRunner = runScraplingFetch,
   settingsReader: SettingsReader = readWebFetchSettings,
   defuddleConverter: DefuddleConverter = convertHtmlWithDefuddle,
+  ghRunner: WebFetchRunner = runGhFetch,
 ) {
   return {
     name: 'webfetch',
     label: 'Web Fetch',
     description:
-      'Inspect a user-provided HTTP(S) URL and fetch its content with Scrapling. The tool chooses a Scrapling fetcher strategy based on the URL, then extracts cleaned markdown/html/text content with Scrapling Convertor.',
-    promptSnippet:
-      'Fetch and clean information from HTTP(S) URLs using Scrapling fetcher strategies.',
+      'Inspect a user-provided HTTP(S) URL. GitHub URLs are fetched with gh; all other URLs fall back to Scrapling plus Defuddle for readable markdown.',
+    promptSnippet: 'Fetch and clean information from HTTP(S) URLs using gh or Scrapling.',
     promptGuidelines: [
       'Use webfetch when the user provides a URL and asks to inspect, fetch, read, summarize, or analyze its content.',
-      'webfetch uses Scrapling through `scrapling shell`; if Scrapling is unavailable, report the tool error and do not invent fetched content.',
+      'webfetch routes github.com URLs through `gh`; if GitHub CLI is unavailable or unauthenticated, report the tool error and do not invent fetched content.',
+      'For non-GitHub URLs, webfetch falls back to Scrapling through `scrapling shell`; if Scrapling is unavailable, report the tool error and do not invent fetched content.',
       'webfetch defaults to markdown extraction. Use mode="html" only when raw cleaned HTML is needed, and mode="text" for plain text.',
-      'When settings.json has { "webfetch": { "useDefuddle": true } }, webfetch asks Scrapling for cleaned HTML and converts it to Markdown with Defuddle for markdown output.',
+      'For fallback markdown, webfetch asks Scrapling for cleaned HTML and converts it to Markdown with Defuddle by default. Set { "webfetch": { "useDefuddle": false } } to skip Defuddle.',
     ],
     parameters: WebFetchParams,
 
@@ -265,30 +285,37 @@ export function createWebFetchTool(
       ctx: { cwd: string },
     ) {
       const mode = normalizeMode(params.mode ?? DEFAULT_MODE);
+      const selectedRunner =
+        isGitHubUrl(params.url) && runner === runScraplingFetch ? ghRunner : runner;
       const settings = settingsReader(ctx.cwd);
-      const useDefuddle = settings.useDefuddle && mode === 'markdown';
+      const useDefuddle =
+        selectedRunner !== ghRunner &&
+        mode === 'markdown' &&
+        (settings.useDefuddle ?? selectedRunner === runScraplingFetch);
       const scraplingMode: ExtractionMode = useDefuddle ? 'html' : mode;
-      let converter: WebFetchDetails['converter'] = 'scrapling';
+      const detailScraplingMode = selectedRunner === ghRunner ? undefined : scraplingMode;
+      let converter: WebFetchDetails['converter'] =
+        selectedRunner === ghRunner ? 'gh' : 'scrapling';
       emitToolProgress(onUpdate, params, {
         url: params.url,
         mode,
-        scraplingMode,
+        scraplingMode: detailScraplingMode,
         converter,
         useDefuddle,
         phase: 'starting',
         message: 'starting webfetch',
         errors: [],
       });
-      let result = await runner({
+      let result = await selectedRunner({
         url: params.url,
-        mode: scraplingMode,
+        mode: selectedRunner === ghRunner ? mode : scraplingMode,
         cwd: ctx.cwd,
         signal,
         onProgress: (progress) => {
           emitToolProgress(onUpdate, params, {
             url: params.url,
             mode,
-            scraplingMode,
+            scraplingMode: detailScraplingMode,
             converter,
             useDefuddle,
             phase: progress.phase,
@@ -309,10 +336,12 @@ export function createWebFetchTool(
             strategy: result.strategy,
             strategyReason: result.strategyReason,
             mode,
-            scraplingMode,
+            scraplingMode: detailScraplingMode,
             converter,
             useDefuddle,
             contentLength: result.contentLength,
+            phase: 'failed',
+            ...(result.strategy ? { currentStrategy: result.strategy } : {}),
             errors: result.errors,
           } as WebFetchDetails,
           isError: true as const,
@@ -347,7 +376,7 @@ export function createWebFetchTool(
           };
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
-          const failedResult: ScraplingFetchResult = {
+          const failedResult: WebFetchResultLike = {
             ...result,
             ok: false,
             mode: 'markdown',
@@ -362,10 +391,12 @@ export function createWebFetchTool(
               strategy: failedResult.strategy,
               strategyReason: failedResult.strategyReason,
               mode: 'markdown',
-              scraplingMode,
+              scraplingMode: detailScraplingMode,
               converter: 'defuddle',
               useDefuddle,
               contentLength: failedResult.contentLength,
+              phase: 'failed',
+              ...(failedResult.strategy ? { currentStrategy: failedResult.strategy } : {}),
               errors: failedResult.errors,
             } as WebFetchDetails,
             isError: true as const,
@@ -383,10 +414,12 @@ export function createWebFetchTool(
             strategy: result.strategy,
             strategyReason: result.strategyReason,
             mode: result.mode,
-            scraplingMode,
+            scraplingMode: detailScraplingMode,
             converter,
             useDefuddle,
             contentLength: result.contentLength,
+            phase: 'failed',
+            ...(result.strategy ? { currentStrategy: result.strategy } : {}),
             errors: result.errors,
           } as WebFetchDetails,
           isError: true as const,
@@ -414,7 +447,7 @@ export function createWebFetchTool(
             text: formatSuccess(result, content, {
               converter,
               useDefuddle,
-              scraplingMode,
+              scraplingMode: detailScraplingMode,
               fullOutputPath,
             }),
           },
@@ -426,7 +459,7 @@ export function createWebFetchTool(
           strategy: result.strategy,
           strategyReason: result.strategyReason,
           mode: result.mode,
-          scraplingMode,
+          scraplingMode: detailScraplingMode,
           converter,
           useDefuddle,
           contentLength: result.contentLength,

@@ -3,3 +3,4 @@ export * from './shared.js';
 export * from './sites.js';
 export * from './cli/scrapling.js';
 export * from './cli/defuddle.js';
+export * from './cli/gh.js';

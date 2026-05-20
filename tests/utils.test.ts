@@ -8,6 +8,8 @@ import {
   convertHtmlWithDefuddle,
   DEFAULT_STRATEGIES,
   SITE_STRATEGY_MAPPINGS,
+  ghRouteForUrl,
+  isGitHubUrl,
   normalizeMode,
   normalizeUrl,
   readWebFetchSettings,
@@ -75,8 +77,8 @@ describe('readWebFetchSettings', () => {
     writeFileSync(join(cwd!, '.pi', 'settings.json'), JSON.stringify(content));
   }
 
-  it('defaults useDefuddle to false', () => {
-    assert.deepEqual(readWebFetchSettings(cwd!), { useDefuddle: false });
+  it('defaults useDefuddle to the built-in fallback behavior', () => {
+    assert.deepEqual(readWebFetchSettings(cwd!), {});
   });
 
   it('reads nested global webfetch.useDefuddle', () => {
@@ -97,7 +99,7 @@ describe('readWebFetchSettings', () => {
 
   it('ignores invalid values', () => {
     writeGlobalSettings({ webfetch: { useDefuddle: 'yes' } });
-    assert.deepEqual(readWebFetchSettings(cwd!), { useDefuddle: false });
+    assert.deepEqual(readWebFetchSettings(cwd!), {});
   });
 });
 
@@ -123,6 +125,91 @@ describe('strategy mapping', () => {
   it('prefers StealthyFetcher for Twitter/X', () => {
     assert.deepEqual(strategiesForUrl('https://x.com/jack'), ['stealthy']);
     assert.deepEqual(strategiesForUrl('https://twitter.com/jack'), ['stealthy']);
+  });
+});
+
+describe('GitHub routing', () => {
+  it('detects github.com and gist.github.com URLs only', () => {
+    assert.equal(isGitHubUrl('https://github.com/jwu/pi-webfetch'), true);
+    assert.equal(isGitHubUrl('https://www.github.com/jwu/pi-webfetch'), true);
+    assert.equal(isGitHubUrl('https://gist.github.com/jwu/abc123'), true);
+    assert.equal(isGitHubUrl('https://example.com/jwu/pi-webfetch'), false);
+  });
+
+  it('routes known GitHub URL types to matching gh view commands', () => {
+    assert.equal(ghRouteForUrl('https://github.com/jwu/pi-webfetch').strategy, 'view repo');
+    assert.equal(ghRouteForUrl('https://github.com/jwu/pi-webfetch/pull/34').strategy, 'view pr');
+    assert.equal(
+      ghRouteForUrl('https://github.com/jwu/pi-webfetch/issues/12').strategy,
+      'view issue',
+    );
+    assert.equal(
+      ghRouteForUrl('https://github.com/jwu/pi-webfetch/releases/tag/v1.0').strategy,
+      'view release',
+    );
+    assert.equal(ghRouteForUrl('https://gist.github.com/jwu/abc123').strategy, 'view gist');
+    assert.equal(
+      ghRouteForUrl('https://github.com/jwu/pi-webfetch/actions/runs/99').strategy,
+      'view run',
+    );
+
+    assert.deepEqual(ghRouteForUrl('https://github.com/jwu/pi-webfetch').args, [
+      'repo',
+      'view',
+      'https://github.com/jwu/pi-webfetch',
+    ]);
+    assert.deepEqual(ghRouteForUrl('https://github.com/jwu/pi-webfetch/pull/34').args, [
+      'pr',
+      'view',
+      'https://github.com/jwu/pi-webfetch/pull/34',
+    ]);
+    assert.deepEqual(ghRouteForUrl('https://github.com/jwu/pi-webfetch/issues/12').args, [
+      'issue',
+      'view',
+      'https://github.com/jwu/pi-webfetch/issues/12',
+    ]);
+    assert.deepEqual(ghRouteForUrl('https://github.com/jwu/pi-webfetch/releases/tag/v1.0').args, [
+      'release',
+      'view',
+      'v1.0',
+      '-R',
+      'jwu/pi-webfetch',
+    ]);
+    assert.deepEqual(ghRouteForUrl('https://gist.github.com/jwu/abc123').args, [
+      'gist',
+      'view',
+      'https://gist.github.com/jwu/abc123',
+    ]);
+    assert.deepEqual(ghRouteForUrl('https://github.com/jwu/pi-webfetch/actions/runs/99').args, [
+      'run',
+      'view',
+      '99',
+      '-R',
+      'jwu/pi-webfetch',
+    ]);
+  });
+
+  it('falls back to gh api for unmatched GitHub URLs', () => {
+    assert.equal(ghRouteForUrl('https://github.com/jwu/pi-webfetch/commit/abc123').strategy, 'api');
+    assert.equal(
+      ghRouteForUrl('https://github.com/jwu/pi-webfetch/blob/main/README.md').strategy,
+      'api',
+    );
+
+    assert.deepEqual(ghRouteForUrl('https://github.com/jwu/pi-webfetch/commit/abc123').args, [
+      'api',
+      'repos/jwu/pi-webfetch/commits/abc123',
+    ]);
+    assert.deepEqual(ghRouteForUrl('https://github.com/jwu/pi-webfetch/blob/main/README.md').args, [
+      'api',
+      'repos/jwu/pi-webfetch/contents/README.md',
+      '--method',
+      'GET',
+      '-f',
+      'ref=main',
+      '-H',
+      'Accept: application/vnd.github.raw+json',
+    ]);
   });
 });
 

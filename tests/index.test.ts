@@ -65,9 +65,101 @@ describe('webfetch extension', () => {
     assert.equal(tools[0].name, 'webfetch');
     assert.equal(tools[0].label, 'Web Fetch');
     assert.match(tools[0].description, /Scrapling/);
+    assert.match(tools[0].description, /gh/);
     assert.ok(tools[0].promptSnippet?.includes('Scrapling'));
+    assert.ok(tools[0].promptGuidelines?.some((line) => line.includes('github.com')));
     assert.ok(tools[0].promptGuidelines?.some((line) => line.includes('scrapling shell')));
     assert.ok(tools[0].promptGuidelines?.some((line) => line.includes('useDefuddle')));
+  });
+
+  it('routes GitHub URLs to gh', async () => {
+    let ghCalled = false;
+    let converterCalled = false;
+    const ghRunner: WebFetchRunner = async ({ url, mode }) => {
+      ghCalled = true;
+      return {
+        ok: true,
+        url,
+        finalUrl: url,
+        status: 200,
+        strategy: 'view repo',
+        strategyReason: 'GitHub URL matched; fetch with gh.',
+        mode: mode ?? 'markdown',
+        content: '{"nameWithOwner":"jwu/pi-webfetch"}',
+        contentLength: 34,
+        errors: [],
+      };
+    };
+
+    const tool = createWebFetchTool(
+      undefined,
+      () => ({}),
+      async () => {
+        converterCalled = true;
+        return 'converted';
+      },
+      ghRunner,
+    );
+    const result = await tool.execute(
+      'call-1',
+      { url: 'https://github.com/jwu/pi-webfetch' },
+      undefined,
+      undefined,
+      { cwd: process.cwd() },
+    );
+
+    assert.equal(ghCalled, true);
+    assert.equal(converterCalled, false);
+    assert.match(result.content[0].text, /Fetcher: view repo/);
+    assert.match(result.content[0].text, /Converter: gh/);
+    assert.deepEqual(result.details, {
+      url: 'https://github.com/jwu/pi-webfetch',
+      finalUrl: 'https://github.com/jwu/pi-webfetch',
+      status: 200,
+      strategy: 'view repo',
+      strategyReason: 'GitHub URL matched; fetch with gh.',
+      mode: 'markdown',
+      scraplingMode: undefined,
+      converter: 'gh',
+      useDefuddle: false,
+      contentLength: 34,
+      fullOutputPath: undefined,
+      truncation: (result.details as { truncation: unknown }).truncation,
+      phase: 'done',
+      errors: [],
+    });
+  });
+
+  it('renders GitHub failures as failed without duplicated gh label', async () => {
+    const ghRunner: WebFetchRunner = async ({ url, mode }) => ({
+      ok: false,
+      url,
+      strategy: 'view repo',
+      strategyReason: 'GitHub URL matched; fetch with gh.',
+      mode: mode ?? 'markdown',
+      errors: [{ strategy: 'view repo', error: 'gh auth required' }],
+    });
+
+    const tool = createWebFetchTool(undefined, () => ({}), undefined, ghRunner);
+    const result = await tool.execute(
+      'call-1',
+      { url: 'https://github.com/jwu/pi-webfetch' },
+      undefined,
+      undefined,
+      { cwd: process.cwd() },
+    );
+
+    const rendered = tool.renderResult(result, { expanded: false, isPartial: false }, mockTheme());
+    const text = rendered
+      .render(1000)
+      .map((line) => line.trimEnd())
+      .join('\n');
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /GitHub CLI/);
+    assert.doesNotMatch(result.content[0].text, /Scrapling \+ Defuddle/);
+    assert.match(text, /^└─ failed: gh view repo/m);
+    assert.doesNotMatch(text, /failed: gh gh/);
   });
 
   it('returns fetched Scrapling content from the runner', async () => {
@@ -224,7 +316,7 @@ describe('webfetch extension', () => {
     );
 
     assert.equal(result.isError, true);
-    assert.match(result.content[0].text, /Scrapling fetch failed/);
+    assert.match(result.content[0].text, /Web fetch failed/);
     assert.match(result.content[0].text, /defuddle exploded/);
     assert.deepEqual(result.details, {
       url: 'https://example.com',
@@ -237,6 +329,8 @@ describe('webfetch extension', () => {
       converter: 'defuddle',
       useDefuddle: true,
       contentLength: '<article>HTML</article>'.length,
+      phase: 'failed',
+      currentStrategy: 'fetcher',
       errors: [{ strategy: 'defuddle', error: 'defuddle exploded' }],
     });
   });
@@ -381,7 +475,7 @@ describe('webfetch extension', () => {
     );
 
     assert.equal(result.isError, true);
-    assert.match(result.content[0].text, /Scrapling fetch failed/);
+    assert.match(result.content[0].text, /Web fetch failed/);
     assert.match(result.content[0].text, /HTTP status 403/);
     assert.deepEqual(result.details, {
       url: 'https://example.com',
@@ -394,6 +488,7 @@ describe('webfetch extension', () => {
       converter: 'scrapling',
       useDefuddle: false,
       contentLength: undefined,
+      phase: 'failed',
       errors: [{ strategy: 'fetcher', error: 'HTTP status 403' }],
     });
   });
