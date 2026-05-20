@@ -81,9 +81,21 @@ describe('readWebFetchSettings', () => {
     assert.deepEqual(readWebFetchSettings(cwd!), {});
   });
 
-  it('reads nested global webfetch.useDefuddle', () => {
-    writeGlobalSettings({ webfetch: { useDefuddle: true } });
-    assert.deepEqual(readWebFetchSettings(cwd!), { useDefuddle: true });
+  it('reads nested global webfetch settings', () => {
+    writeGlobalSettings({
+      webfetch: {
+        useDefuddle: true,
+        qualityJudge: true,
+        qualityJudgeModel: 'google/gemini-2.5-flash',
+        qualityJudgeThinkLevel: 'minimal',
+      },
+    });
+    assert.deepEqual(readWebFetchSettings(cwd!), {
+      useDefuddle: true,
+      qualityJudge: true,
+      qualityJudgeModel: 'google/gemini-2.5-flash',
+      qualityJudgeThinkLevel: 'minimal',
+    });
   });
 
   it('reads dotted webfetch.useDefuddle for compatibility', () => {
@@ -92,13 +104,38 @@ describe('readWebFetchSettings', () => {
   });
 
   it('lets project settings override global settings', () => {
-    writeGlobalSettings({ webfetch: { useDefuddle: true } });
-    writeProjectSettings({ webfetch: { useDefuddle: false } });
-    assert.deepEqual(readWebFetchSettings(cwd!), { useDefuddle: false });
+    writeGlobalSettings({
+      webfetch: {
+        useDefuddle: true,
+        qualityJudge: true,
+        qualityJudgeModel: 'google/gemini-2.5-flash',
+        qualityJudgeThinkLevel: 'minimal',
+      },
+    });
+    writeProjectSettings({
+      webfetch: {
+        useDefuddle: false,
+        qualityJudgeModel: 'anthropic/claude-sonnet-4-5',
+        qualityJudgeThinkLevel: 'off',
+      },
+    });
+    assert.deepEqual(readWebFetchSettings(cwd!), {
+      useDefuddle: false,
+      qualityJudge: true,
+      qualityJudgeModel: 'anthropic/claude-sonnet-4-5',
+      qualityJudgeThinkLevel: 'off',
+    });
   });
 
   it('ignores invalid values', () => {
-    writeGlobalSettings({ webfetch: { useDefuddle: 'yes' } });
+    writeGlobalSettings({
+      webfetch: {
+        useDefuddle: 'yes',
+        qualityJudge: 'yes',
+        qualityJudgeModel: '',
+        qualityJudgeThinkLevel: 'extreme',
+      },
+    });
     assert.deepEqual(readWebFetchSettings(cwd!), {});
   });
 });

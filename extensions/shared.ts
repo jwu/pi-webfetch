@@ -6,7 +6,12 @@ import { join } from 'node:path';
 
 import { withFileMutationQueue } from '@earendil-works/pi-coding-agent';
 
-import { DEFAULT_MODE, type ExtractionMode, type WebFetchSettings } from './types.js';
+import {
+  DEFAULT_MODE,
+  type ExtractionMode,
+  type QualityJudgeThinkLevel,
+  type WebFetchSettings,
+} from './types.js';
 
 export const DEFAULT_COMMAND_TIMEOUT_MS = 180_000;
 
@@ -38,27 +43,67 @@ function getProjectSettingsPath(cwd: string): string {
   return join(cwd, '.pi', 'settings.json');
 }
 
-function extractUseDefuddle(settings: Record<string, unknown>): boolean | undefined {
-  const dotted = settings['webfetch.useDefuddle'];
-  if (typeof dotted === 'boolean') return dotted;
+function readWebfetchValue(settings: Record<string, unknown>, key: string): unknown {
+  const dotted = settings[`webfetch.${key}`];
+  if (dotted !== undefined) return dotted;
 
   const webfetch = settings.webfetch;
   if (webfetch && typeof webfetch === 'object' && !Array.isArray(webfetch)) {
-    const value = (webfetch as Record<string, unknown>).useDefuddle;
-    if (typeof value === 'boolean') return value;
+    return (webfetch as Record<string, unknown>)[key];
   }
 
   return undefined;
 }
 
+function readBooleanSetting(settings: Record<string, unknown>, key: string): boolean | undefined {
+  const value = readWebfetchValue(settings, key);
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+function readStringSetting(settings: Record<string, unknown>, key: string): string | undefined {
+  const value = readWebfetchValue(settings, key);
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function readQualityJudgeThinkLevel(
+  settings: Record<string, unknown>,
+): QualityJudgeThinkLevel | undefined {
+  const value = readStringSetting(settings, 'qualityJudgeThinkLevel');
+  if (
+    value === 'off' ||
+    value === 'minimal' ||
+    value === 'low' ||
+    value === 'medium' ||
+    value === 'high' ||
+    value === 'xhigh'
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function extractWebFetchSettings(settings: Record<string, unknown>): WebFetchSettings {
+  return {
+    ...(readBooleanSetting(settings, 'useDefuddle') !== undefined
+      ? { useDefuddle: readBooleanSetting(settings, 'useDefuddle') }
+      : {}),
+    ...(readBooleanSetting(settings, 'qualityJudge') !== undefined
+      ? { qualityJudge: readBooleanSetting(settings, 'qualityJudge') }
+      : {}),
+    ...(readStringSetting(settings, 'qualityJudgeModel')
+      ? { qualityJudgeModel: readStringSetting(settings, 'qualityJudgeModel') }
+      : {}),
+    ...(readQualityJudgeThinkLevel(settings)
+      ? { qualityJudgeThinkLevel: readQualityJudgeThinkLevel(settings) }
+      : {}),
+  };
+}
+
 export function readWebFetchSettings(cwd: string): WebFetchSettings {
-  const projectUseDefuddle = extractUseDefuddle(readSettingsFile(getProjectSettingsPath(cwd)));
-  if (projectUseDefuddle !== undefined) return { useDefuddle: projectUseDefuddle };
-
-  const globalUseDefuddle = extractUseDefuddle(readSettingsFile(getGlobalSettingsPath()));
-  if (globalUseDefuddle !== undefined) return { useDefuddle: globalUseDefuddle };
-
-  return {};
+  return {
+    ...extractWebFetchSettings(readSettingsFile(getGlobalSettingsPath())),
+    ...extractWebFetchSettings(readSettingsFile(getProjectSettingsPath(cwd))),
+  };
 }
 
 export function normalizeUrl(rawUrl: string): string {

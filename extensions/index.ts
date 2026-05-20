@@ -1,4 +1,6 @@
-import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import type { Api, Model, ModelThinkingLevel, UserMessage } from '@earendil-works/pi-ai';
+import { clampThinkingLevel, complete } from '@earendil-works/pi-ai';
+import type { ExtensionAPI, ModelRegistry } from '@earendil-works/pi-coding-agent';
 import {
   DEFAULT_MAX_BYTES,
   DEFAULT_MAX_LINES,
@@ -60,7 +62,7 @@ export interface WebFetchDetails {
   scraplingMode?: ExtractionMode;
   converter: 'scrapling' | 'defuddle' | 'gh';
   useDefuddle: boolean;
-  phase?: WebFetchProgress['phase'] | 'converting' | 'done';
+  phase?: WebFetchProgress['phase'] | 'converting' | 'judging' | 'done';
   currentStrategy?: string;
   message?: string;
   contentLength?: number;
@@ -72,6 +74,29 @@ export interface WebFetchDetails {
 export type WebFetchRunner = (options: WebFetchOptionsLike) => Promise<WebFetchResultLike>;
 export type DefuddleConverter = (html: string, url: string) => Promise<string>;
 export type SettingsReader = (cwd: string) => WebFetchSettings;
+
+interface WebFetchExecutionContext {
+  cwd: string;
+  model?: Model<Api>;
+  modelRegistry?: ModelRegistry;
+}
+
+interface QualityJudgeInput {
+  url: string;
+  finalUrl?: string;
+  strategy?: string;
+  content: string;
+  settings: WebFetchSettings;
+  ctx: WebFetchExecutionContext;
+  signal?: AbortSignal;
+}
+
+interface QualityJudgeDecision {
+  usable: boolean;
+  reason: string;
+}
+
+export type QualityJudge = (input: QualityJudgeInput) => Promise<QualityJudgeDecision | undefined>;
 
 function extensionForMode(mode: ExtractionMode): string {
   if (mode === 'html') return 'html';
@@ -210,6 +235,116 @@ function getCollapsedPreviewOutput(output: string): string {
   return output.slice(bodyStart + 2);
 }
 
+const QUALITY_JUDGE_SYSTEM_PROMPT = `You judge whether fetched web content is usable for answering a user's request.
+Return only JSON with this shape: {"usable": boolean, "reason": string}.
+Mark usable=false when the content is mainly boilerplate, navigation, footer/legal text, a captcha/challenge/anti-bot page, an error page, or unrelated to the requested URL. Keep reason concise.`;
+
+function parseModelRef(ref: string): { provider: string; modelId: string } | undefined {
+  const slash = ref.indexOf('/');
+  if (slash <= 0 || slash === ref.length - 1) return undefined;
+  return { provider: ref.slice(0, slash), modelId: ref.slice(slash + 1) };
+}
+
+function resolveQualityJudgeModel(
+  settings: WebFetchSettings,
+  ctx: WebFetchExecutionContext,
+): Model<Api> | undefined {
+  if (settings.qualityJudgeModel) {
+    const ref = parseModelRef(settings.qualityJudgeModel);
+    if (!ref) return undefined;
+    return ctx.modelRegistry?.find(ref.provider, ref.modelId);
+  }
+
+  return ctx.model;
+}
+
+function extractTextContent(response: { content: Array<{ type: string; text?: string }> }): string {
+  return response.content
+    .filter((content): content is { type: 'text'; text: string } => content.type === 'text')
+    .map((content) => content.text)
+    .join('\n');
+}
+
+function parseQualityJudgeDecision(raw: string): QualityJudgeDecision | undefined {
+  const trimmed = raw.trim();
+  const jsonText = trimmed.startsWith('{') ? trimmed : trimmed.match(/\{[\s\S]*\}/)?.[0];
+  if (!jsonText) return undefined;
+
+  try {
+    const parsed = JSON.parse(jsonText) as Partial<QualityJudgeDecision>;
+    if (typeof parsed.usable !== 'boolean') return undefined;
+    return {
+      usable: parsed.usable,
+      reason:
+        typeof parsed.reason === 'string' && parsed.reason.trim()
+          ? parsed.reason.trim()
+          : 'no reason',
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+async function runQualityJudge({
+  url,
+  finalUrl,
+  strategy,
+  content,
+  settings,
+  ctx,
+  signal,
+}: QualityJudgeInput): Promise<QualityJudgeDecision | undefined> {
+  if (!settings.qualityJudge) return undefined;
+  if (!ctx.modelRegistry) return undefined;
+
+  const model = resolveQualityJudgeModel(settings, ctx);
+  if (!model) return undefined;
+
+  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  if (!auth.ok || !auth.apiKey) return undefined;
+
+  const userMessage: UserMessage = {
+    role: 'user',
+    timestamp: Date.now(),
+    content: [
+      {
+        type: 'text',
+        text: [
+          `Requested URL: ${url}`,
+          finalUrl ? `Final URL: ${finalUrl}` : undefined,
+          strategy ? `Fetch strategy: ${strategy}` : undefined,
+          '',
+          'Fetched Markdown sample:',
+          content.slice(0, 12_000),
+        ]
+          .filter((line): line is string => line !== undefined)
+          .join('\n'),
+      },
+    ],
+  };
+
+  try {
+    const requestedThinking = settings.qualityJudgeThinkLevel ?? 'off';
+    const clampedThinking = clampThinkingLevel(model, requestedThinking as ModelThinkingLevel);
+    const response = await complete(
+      model,
+      { systemPrompt: QUALITY_JUDGE_SYSTEM_PROMPT, messages: [userMessage] },
+      {
+        apiKey: auth.apiKey,
+        headers: auth.headers,
+        signal,
+        maxTokens: 200,
+        ...(clampedThinking !== 'off' ? { reasoning: clampedThinking } : {}),
+      },
+    );
+
+    if (response.stopReason === 'aborted') return undefined;
+    return parseQualityJudgeDecision(extractTextContent(response));
+  } catch {
+    return undefined;
+  }
+}
+
 function renderWebFetchResult(
   result: { content: Array<{ type: string; text?: string }>; details?: unknown },
   options: { expanded: boolean; isPartial: boolean },
@@ -259,8 +394,10 @@ function renderWebFetchResult(
 async function runWithDefuddlePerStrategy(options: {
   runner: WebFetchRunner;
   defuddleConverter: DefuddleConverter;
+  qualityJudge: QualityJudge;
   params: WebFetchInput;
-  cwd: string;
+  settings: WebFetchSettings;
+  ctx: WebFetchExecutionContext;
   signal?: AbortSignal;
   onUpdate?: AgentToolUpdateCallback<WebFetchDetails>;
 }): Promise<WebFetchResultLike> {
@@ -272,7 +409,7 @@ async function runWithDefuddlePerStrategy(options: {
     const result = await options.runner({
       url: options.params.url,
       mode: 'html',
-      cwd: options.cwd,
+      cwd: options.ctx.cwd,
       signal: options.signal,
       strategies: [strategy],
       onProgress: (progress) => {
@@ -319,6 +456,70 @@ async function runWithDefuddlePerStrategy(options: {
         result.content,
         result.finalUrl ?? result.url,
       );
+      if (options.settings.qualityJudge) {
+        emitToolProgress(options.onUpdate, options.params, {
+          url: result.url,
+          finalUrl: result.finalUrl,
+          status: result.status,
+          strategy: result.strategy,
+          strategyReason: result.strategyReason,
+          mode: 'markdown',
+          scraplingMode: 'html',
+          converter: 'defuddle',
+          useDefuddle: true,
+          phase: 'judging',
+          currentStrategy: result.strategy,
+          message: `judging content quality (${result.strategy ?? strategy})`,
+          contentLength: content.length,
+          errors: accumulatedErrors,
+        });
+
+        const judgement = await options
+          .qualityJudge({
+            url: options.params.url,
+            finalUrl: result.finalUrl,
+            strategy: result.strategy ?? strategy,
+            content,
+            settings: options.settings,
+            ctx: options.ctx,
+            signal: options.signal,
+          })
+          .catch(() => undefined);
+
+        if (judgement && !judgement.usable) {
+          const strategyName = result.strategy ?? strategy;
+          accumulatedErrors.push(...result.errors, {
+            strategy: strategyName,
+            error: `quality-judge: ${judgement.reason}`,
+          });
+          lastResult = {
+            ...result,
+            ok: false,
+            mode: 'markdown',
+            content,
+            contentLength: content.length,
+            errors: accumulatedErrors,
+          };
+          emitToolProgress(options.onUpdate, options.params, {
+            url: result.url,
+            finalUrl: result.finalUrl,
+            status: result.status,
+            strategy: result.strategy,
+            strategyReason: result.strategyReason,
+            mode: 'markdown',
+            scraplingMode: 'html',
+            converter: 'defuddle',
+            useDefuddle: true,
+            phase: 'failed',
+            currentStrategy: strategyName,
+            message: `${strategyName} rejected by quality judge: ${judgement.reason}`,
+            contentLength: content.length,
+            errors: accumulatedErrors,
+          });
+          continue;
+        }
+      }
+
       return {
         ...result,
         ok: true,
@@ -378,6 +579,7 @@ export function createWebFetchTool(
   settingsReader: SettingsReader = readWebFetchSettings,
   defuddleConverter: DefuddleConverter = convertHtmlWithDefuddle,
   ghRunner: WebFetchRunner = runGhFetch,
+  qualityJudge: QualityJudge = runQualityJudge,
 ) {
   return {
     name: 'webfetch',
@@ -391,6 +593,9 @@ export function createWebFetchTool(
       'For non-GitHub URLs, webfetch falls back to Scrapling through `scrapling shell`; if Scrapling is unavailable, report the tool error and do not invent fetched content.',
       'webfetch defaults to markdown extraction. Use mode="html" only when raw cleaned HTML is needed, and mode="text" for plain text.',
       'For fallback markdown, webfetch asks Scrapling for cleaned HTML and converts it to Markdown with Defuddle by default. Set { "webfetch": { "useDefuddle": false } } to skip Defuddle.',
+      'If webfetch output is truncated and includes a Full output path, use the read tool on that path when complete content is needed.',
+      'Evaluate fetched content quality before relying on it; if it looks like boilerplate, a captcha/challenge page, or unrelated content, tell the user instead of treating it as authoritative.',
+      'Optional setting { "webfetch": { "qualityJudge": true, "qualityJudgeModel": "provider/model", "qualityJudgeThinkLevel": "off" } } asks an LLM to reject unusable content before trying the next Scrapling strategy.',
     ],
     parameters: WebFetchParams,
 
@@ -399,7 +604,7 @@ export function createWebFetchTool(
       params: WebFetchInput,
       signal: AbortSignal | undefined,
       onUpdate: AgentToolUpdateCallback<WebFetchDetails> | undefined,
-      ctx: { cwd: string },
+      ctx: WebFetchExecutionContext,
     ) {
       const mode = normalizeMode(params.mode ?? DEFAULT_MODE);
       const selectedRunner =
@@ -430,8 +635,10 @@ export function createWebFetchTool(
         result = await runWithDefuddlePerStrategy({
           runner: selectedRunner,
           defuddleConverter,
+          qualityJudge,
           params,
-          cwd: ctx.cwd,
+          settings,
+          ctx,
           signal,
           onUpdate,
         });

@@ -73,6 +73,8 @@ describe('webfetch extension', () => {
     assert.ok(tools[0].promptGuidelines?.some((line) => line.includes('github.com')));
     assert.ok(tools[0].promptGuidelines?.some((line) => line.includes('scrapling shell')));
     assert.ok(tools[0].promptGuidelines?.some((line) => line.includes('useDefuddle')));
+    assert.ok(tools[0].promptGuidelines?.some((line) => line.includes('Full output')));
+    assert.ok(tools[0].promptGuidelines?.some((line) => line.includes('qualityJudge')));
   });
 
   it('routes GitHub URLs to gh', async () => {
@@ -359,6 +361,53 @@ describe('webfetch extension', () => {
       phase: 'done',
       errors: [{ strategy: 'fetcher', error: 'defuddle: empty markdown' }],
     });
+  });
+
+  it('tries the next strategy when quality judge rejects content', async () => {
+    const calls: string[] = [];
+    const runner: WebFetchRunner = async ({ url, mode, strategies }) => {
+      const strategy = strategies?.[0] ?? 'fetcher';
+      calls.push(strategy);
+      const content = `<article>${strategy}</article>`;
+      return {
+        ok: true,
+        url,
+        finalUrl: url,
+        status: 200,
+        strategy,
+        strategyReason: 'test strategy reason',
+        mode: mode ?? 'markdown',
+        content,
+        contentLength: content.length,
+        errors: [],
+      };
+    };
+
+    const tool = createWebFetchTool(
+      runner,
+      () => ({ useDefuddle: true, qualityJudge: true }),
+      async (html) => (html.includes('fetcher') ? 'footer only' : '# Useful dynamic content'),
+      undefined,
+      async ({ content }) => ({
+        usable: content.includes('Useful dynamic content'),
+        reason: content.includes('Useful dynamic content') ? 'usable' : 'footer only',
+      }),
+    );
+
+    const result = await tool.execute(
+      'call-1',
+      { url: 'https://example.com' },
+      undefined,
+      undefined,
+      { cwd: process.cwd() },
+    );
+
+    assert.deepEqual(calls, ['fetcher', 'dynamic']);
+    assert.match(result.content[0].text, /Fetcher: dynamic/);
+    assert.match(result.content[0].text, /# Useful dynamic content/);
+    assert.deepEqual((result.details as { errors: unknown }).errors, [
+      { strategy: 'fetcher', error: 'quality-judge: footer only' },
+    ]);
   });
 
   it('returns an error result when Defuddle conversion fails for every strategy', async () => {

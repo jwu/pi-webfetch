@@ -32,29 +32,43 @@ Defuddle conversion is bundled as an npm dependency and is used by default for n
 
 ## Configuration
 
-Add `webfetch.useDefuddle` to `.pi/settings.json` (project) or `~/.pi/agent/settings.json` (global) to override the default:
+Add `webfetch` settings to `.pi/settings.json` (project) or `~/.pi/agent/settings.json` (global) to override defaults:
 
 ```json
 {
   "webfetch": {
-    "useDefuddle": true
+    "useDefuddle": true,
+    "qualityJudge": false,
+    "qualityJudgeModel": "google/gemini-2.5-flash",
+    "qualityJudgeThinkLevel": "off"
   }
 }
 ```
 
-Behavior:
+Defuddle behavior:
 
-| Setting | Markdown behavior |
+| `webfetch.useDefuddle` | Markdown behavior |
 |---|---|
 | omitted | Scrapling fetches cleaned HTML, then Defuddle converts that HTML to Markdown |
 | `true` | Same as omitted: use Scrapling HTML plus Defuddle Markdown conversion |
 | `false` | Scrapling fetches and extracts Markdown directly |
 
+Quality judge behavior:
+
+| Setting | Default | Description |
+|---|---:|---|
+| `webfetch.qualityJudge` | `false` | When enabled, ask an LLM whether the fetched Markdown is usable before accepting a Scrapling strategy. If the judge returns unusable, `webfetch` records that strategy as failed and tries the next one. |
+| `webfetch.qualityJudgeModel` | current pi model | Optional judge model in `provider/model` form, for example `google/gemini-2.5-flash`. |
+| `webfetch.qualityJudgeThinkLevel` | `off` | Optional judge thinking level: `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. Unsupported levels are clamped for the selected model. |
+
 Project settings override global settings. For compatibility, the dotted key form also works:
 
 ```json
 {
-  "webfetch.useDefuddle": true
+  "webfetch.useDefuddle": true,
+  "webfetch.qualityJudge": true,
+  "webfetch.qualityJudgeModel": "google/gemini-2.5-flash",
+  "webfetch.qualityJudgeThinkLevel": "off"
 }
 ```
 
@@ -91,6 +105,8 @@ For sites that are not in the mapping, `webfetch` uses sequential escalation fro
 Each failed attempt is recorded in `errors`, so the result explains why `webfetch` adjusted to the next strategy.
 
 When Defuddle is enabled for Markdown output, each Scrapling strategy is considered successful only after both steps succeed: Scrapling extracts cleaned HTML, then Defuddle returns non-empty Markdown. If Defuddle fails or returns empty Markdown for a strategy, that strategy is recorded as failed and `webfetch` continues to the next Scrapling strategy.
+
+When `webfetch.qualityJudge` is enabled, the selected judge model receives a sample of the fetched Markdown and returns a JSON usability decision. Unusable content, such as boilerplate, captcha/challenge pages, error pages, or unrelated content, is treated as a failed strategy so `webfetch` can continue to the next Scrapling strategy. If the judge cannot run, `webfetch` fails open and uses the fetched content rather than making the tool unusable.
 
 Content extraction uses:
 
