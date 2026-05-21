@@ -65,38 +65,35 @@ function readStringSetting(settings: Record<string, unknown>, key: string): stri
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+const QUALITY_JUDGE_THINK_LEVELS = new Set<string>([
+  'off',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+]);
+
 function readQualityJudgeThinkLevel(
   settings: Record<string, unknown>,
 ): QualityJudgeThinkLevel | undefined {
   const value = readStringSetting(settings, 'qualityJudgeThinkLevel');
-  if (
-    value === 'off' ||
-    value === 'minimal' ||
-    value === 'low' ||
-    value === 'medium' ||
-    value === 'high' ||
-    value === 'xhigh'
-  ) {
-    return value;
-  }
-  return undefined;
+  return value && QUALITY_JUDGE_THINK_LEVELS.has(value)
+    ? (value as QualityJudgeThinkLevel)
+    : undefined;
+}
+
+function setIfDefined<T, K extends keyof T>(target: T, key: K, value: T[K] | undefined): void {
+  if (value !== undefined) target[key] = value;
 }
 
 function extractWebFetchSettings(settings: Record<string, unknown>): WebFetchSettings {
-  return {
-    ...(readBooleanSetting(settings, 'useDefuddle') !== undefined
-      ? { useDefuddle: readBooleanSetting(settings, 'useDefuddle') }
-      : {}),
-    ...(readBooleanSetting(settings, 'qualityJudge') !== undefined
-      ? { qualityJudge: readBooleanSetting(settings, 'qualityJudge') }
-      : {}),
-    ...(readStringSetting(settings, 'qualityJudgeModel')
-      ? { qualityJudgeModel: readStringSetting(settings, 'qualityJudgeModel') }
-      : {}),
-    ...(readQualityJudgeThinkLevel(settings)
-      ? { qualityJudgeThinkLevel: readQualityJudgeThinkLevel(settings) }
-      : {}),
-  };
+  const extracted: WebFetchSettings = {};
+  setIfDefined(extracted, 'useDefuddle', readBooleanSetting(settings, 'useDefuddle'));
+  setIfDefined(extracted, 'qualityJudge', readBooleanSetting(settings, 'qualityJudge'));
+  setIfDefined(extracted, 'qualityJudgeModel', readStringSetting(settings, 'qualityJudgeModel'));
+  setIfDefined(extracted, 'qualityJudgeThinkLevel', readQualityJudgeThinkLevel(settings));
+  return extracted;
 }
 
 export function readWebFetchSettings(cwd: string): WebFetchSettings {

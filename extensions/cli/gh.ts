@@ -36,6 +36,16 @@ interface GhFetchResult {
   stderr?: string;
 }
 
+type GhResultBase = Omit<GhFetchResult, 'ok' | 'content' | 'contentLength' | 'errors'>;
+
+function failedGhResult(base: GhResultBase, error: string): GhFetchResult {
+  return {
+    ...base,
+    ok: false,
+    errors: [{ strategy: base.strategy ?? 'gh', error }],
+  };
+}
+
 function hostnameOf(url: string): string {
   return new URL(url).hostname.toLowerCase().replace(/^www\./, '');
 }
@@ -226,48 +236,18 @@ export async function runGhFetch(options: GhFetchOptions): Promise<GhFetchResult
       stderr: processResult.stderr,
     };
 
-    if (processResult.aborted) {
-      return {
-        ...base,
-        ok: false,
-        errors: [{ strategy: route.strategy, error: 'gh command aborted' }],
-      };
-    }
+    if (processResult.aborted) return failedGhResult(base, 'gh command aborted');
 
     if (processResult.timedOut) {
-      return {
-        ...base,
-        ok: false,
-        errors: [
-          {
-            strategy: route.strategy,
-            error: `gh command timed out after ${GH_COMMAND_TIMEOUT_MS} ms`,
-          },
-        ],
-      };
+      return failedGhResult(base, `gh command timed out after ${GH_COMMAND_TIMEOUT_MS} ms`);
     }
 
     if (processResult.exitCode !== 0) {
-      return {
-        ...base,
-        ok: false,
-        errors: [
-          {
-            strategy: route.strategy,
-            error: `gh command exited with code ${processResult.exitCode}`,
-          },
-        ],
-      };
+      return failedGhResult(base, `gh command exited with code ${processResult.exitCode}`);
     }
 
     const content = processResult.stdout.trimEnd();
-    if (!content.trim()) {
-      return {
-        ...base,
-        ok: false,
-        errors: [{ strategy: route.strategy, error: 'gh returned empty content' }],
-      };
-    }
+    if (!content.trim()) return failedGhResult(base, 'gh returned empty content');
 
     options.onProgress?.({ phase: 'success', strategy: route.strategy, message: 'gh succeeded' });
     return {
@@ -278,18 +258,14 @@ export async function runGhFetch(options: GhFetchOptions): Promise<GhFetchResult
       errors: [],
     };
   } catch (error) {
-    return {
-      ok: false,
-      url,
-      mode,
-      strategy: route?.strategy ?? 'gh',
-      strategyReason: route?.reason ?? 'GitHub URL matched; fetch with gh.',
-      errors: [
-        {
-          strategy: route?.strategy ?? 'gh',
-          error: error instanceof Error ? error.message : String(error),
-        },
-      ],
-    };
+    return failedGhResult(
+      {
+        url,
+        mode,
+        strategy: route?.strategy ?? 'gh',
+        strategyReason: route?.reason ?? 'GitHub URL matched; fetch with gh.',
+      },
+      error instanceof Error ? error.message : String(error),
+    );
   }
 }

@@ -694,28 +694,6 @@ export function createWebFetchTool(
         };
       }
 
-      if (typeof result.content !== 'string') {
-        return {
-          content: [{ type: 'text' as const, text: formatFailure(result) }],
-          details: {
-            url: result.url,
-            finalUrl: result.finalUrl,
-            status: result.status,
-            strategy: result.strategy,
-            strategyReason: result.strategyReason,
-            mode: result.mode,
-            scraplingMode: detailScraplingMode,
-            converter,
-            useDefuddle,
-            contentLength: result.contentLength,
-            phase: 'failed',
-            ...(result.strategy ? { currentStrategy: result.strategy } : {}),
-            errors: result.errors,
-          } as WebFetchDetails,
-          isError: true as const,
-        };
-      }
-
       const resultContent = result.content;
       const truncation = truncateHead(resultContent, {
         maxLines: DEFAULT_MAX_LINES,
