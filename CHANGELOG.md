@@ -1,3 +1,10 @@
+## [1.2.1](https://github.com/jwu/pi-webfetch/compare/v1.2.0...v1.2.1) (2026-05-22)
+
+
+### Bug Fixes
+
+* include docs in published package ([8626d47](https://github.com/jwu/pi-webfetch/commit/8626d47175f5b49e37f640bec07475a4567f487d))
+
 # [1.2.0](https://github.com/jwu/pi-webfetch/compare/v1.1.0...v1.2.0) (2026-05-22)
 
 
