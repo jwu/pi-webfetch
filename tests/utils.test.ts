@@ -205,6 +205,12 @@ describe('runYtDlpFetch', () => {
     if (binDir) rmSync(binDir, { recursive: true, force: true });
   });
 
+  function installFakeYtDlpScript(script: string) {
+    const executable = join(binDir!, 'yt-dlp');
+    writeFileSync(executable, script);
+    chmodSync(executable, 0o755);
+  }
+
   function installFakeYtDlp() {
     const videoInfo = {
       id: 'abc123',
@@ -292,9 +298,7 @@ Hello &amp; welcome
 World
 VTT
 `;
-    const executable = join(binDir!, 'yt-dlp');
-    writeFileSync(executable, script);
-    chmodSync(executable, 0o755);
+    installFakeYtDlpScript(script);
   }
 
   it('returns YouTube video metadata with transcript markdown', async () => {
@@ -337,6 +341,171 @@ VTT
     );
   });
 
+  it('returns text mode for YouTube text requests and markdown for html requests', async () => {
+    installFakeYtDlp();
+
+    const textResult = await runYtDlpFetch({
+      url: 'https://youtu.be/abc123',
+      mode: 'text',
+      cwd: process.cwd(),
+    });
+    const htmlResult = await runYtDlpFetch({
+      url: 'https://youtu.be/abc123',
+      mode: 'html',
+      cwd: process.cwd(),
+    });
+
+    assert.equal(textResult.ok, true);
+    assert.equal(textResult.mode, 'text');
+    assert.equal(htmlResult.ok, true);
+    assert.equal(htmlResult.mode, 'markdown');
+  });
+
+  it('prefers manual subtitles before automatic subtitles', async () => {
+    const videoInfo = {
+      id: 'manual-first',
+      title: 'Manual First',
+      webpage_url: 'https://www.youtube.com/watch?v=manual-first',
+      language: 'en',
+      subtitles: { zh: [{}] },
+      automatic_captions: { en: [{}] },
+    };
+    installFakeYtDlpScript(`#!/bin/sh
+if echo " $* " | grep -q -- " -J "; then
+  printf '%s\n' ${JSON.stringify(JSON.stringify(videoInfo))}
+  exit 0
+fi
+if ! echo " $* " | grep -q -- " --write-subs "; then
+  exit 2
+fi
+output_dir=""
+previous=""
+for arg in "$@"; do
+  if [ "$previous" = "--paths" ]; then output_dir="$arg"; fi
+  previous="$arg"
+done
+mkdir -p "$output_dir"
+printf 'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nManual transcript\n' > "$output_dir/manual-first.zh.vtt"
+`);
+
+    const result = await runYtDlpFetch({
+      url: 'https://youtu.be/manual-first',
+      mode: 'json',
+      cwd: process.cwd(),
+    });
+
+    assert.equal(result.ok, true);
+    const parsed = JSON.parse(result.content ?? '{}') as {
+      transcript: { source: string; language: string; text: string };
+    };
+    assert.deepEqual(parsed.transcript, {
+      source: 'manual',
+      language: 'zh',
+      text: 'Manual transcript',
+    });
+  });
+
+  it('uses the video language before English for automatic subtitles', async () => {
+    const videoInfo = {
+      id: 'native-auto',
+      title: 'Native Auto',
+      webpage_url: 'https://www.youtube.com/watch?v=native-auto',
+      language: 'fr',
+      automatic_captions: { en: [{}], fr: [{}] },
+    };
+    installFakeYtDlpScript(`#!/bin/sh
+if echo " $* " | grep -q -- " -J "; then
+  printf '%s\n' ${JSON.stringify(JSON.stringify(videoInfo))}
+  exit 0
+fi
+if ! echo " $* " | grep -q -- " --write-auto-subs "; then
+  exit 2
+fi
+if ! echo " $* " | grep -q -- " --sub-langs fr "; then
+  exit 3
+fi
+output_dir=""
+previous=""
+for arg in "$@"; do
+  if [ "$previous" = "--paths" ]; then output_dir="$arg"; fi
+  previous="$arg"
+done
+mkdir -p "$output_dir"
+printf 'WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nBonjour\n' > "$output_dir/native-auto.fr.vtt"
+`);
+
+    const result = await runYtDlpFetch({
+      url: 'https://youtu.be/native-auto',
+      mode: 'json',
+      cwd: process.cwd(),
+    });
+
+    assert.equal(result.ok, true);
+    const parsed = JSON.parse(result.content ?? '{}') as {
+      transcript: { source: string; language: string; text: string };
+    };
+    assert.deepEqual(parsed.transcript, {
+      source: 'automatic',
+      language: 'fr',
+      text: 'Bonjour',
+    });
+  });
+
+  it('succeeds without a transcript when no subtitles are available', async () => {
+    const videoInfo = {
+      id: 'no-subs',
+      title: 'No Subtitles',
+      webpage_url: 'https://www.youtube.com/watch?v=no-subs',
+    };
+    installFakeYtDlpScript(`#!/bin/sh
+if echo " $* " | grep -q -- " -J "; then
+  printf '%s\n' ${JSON.stringify(JSON.stringify(videoInfo))}
+  exit 0
+fi
+exit 9
+`);
+
+    const result = await runYtDlpFetch({
+      url: 'https://youtu.be/no-subs',
+      mode: 'markdown',
+      cwd: process.cwd(),
+    });
+
+    assert.equal(result.ok, true);
+    assert.match(result.content ?? '', /No transcript found/);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it('keeps video metadata when subtitle download fails', async () => {
+    const videoInfo = {
+      id: 'subtitle-fails',
+      title: 'Subtitle Fails',
+      webpage_url: 'https://www.youtube.com/watch?v=subtitle-fails',
+      automatic_captions: { en: [{}] },
+    };
+    installFakeYtDlpScript(`#!/bin/sh
+if echo " $* " | grep -q -- " -J "; then
+  printf '%s\n' ${JSON.stringify(JSON.stringify(videoInfo))}
+  exit 0
+fi
+printf 'subtitle failed' >&2
+exit 7
+`);
+
+    const result = await runYtDlpFetch({
+      url: 'https://youtu.be/subtitle-fails',
+      mode: 'markdown',
+      cwd: process.cwd(),
+    });
+
+    assert.equal(result.ok, true);
+    assert.match(result.content ?? '', /# Subtitle Fails/);
+    assert.match(result.content ?? '', /No transcript found/);
+    assert.deepEqual(result.errors, [
+      { strategy: 'yt-dlp', error: 'transcript: yt-dlp subtitle command exited with code 7' },
+    ]);
+  });
+
   it('expands channel root URLs into videos and shorts sections', async () => {
     installFakeYtDlp();
     const messages: string[] = [];
@@ -372,6 +541,162 @@ VTT
         ['short-one', 'https://www.youtube.com/watch?v=short-one', undefined, 42],
       ],
     );
+  });
+
+  it('expands streams sections and keeps partial channel results when one section fails', async () => {
+    const channelRootInfo = {
+      id: '@StreamExample',
+      title: 'Stream Example',
+      webpage_url: 'https://www.youtube.com/@StreamExample',
+      entries: [
+        { title: 'Stream Example - Videos', url: 'https://www.youtube.com/@StreamExample/videos' },
+        {
+          title: 'Stream Example - Streams',
+          url: 'https://www.youtube.com/@StreamExample/streams',
+        },
+        { title: 'Stream Example - Shorts', url: 'https://www.youtube.com/@StreamExample/shorts' },
+      ],
+    };
+    const videosInfo = {
+      title: 'Stream Example - Videos',
+      webpage_url: 'https://www.youtube.com/@StreamExample/videos',
+      entries: [{ id: 'video-one', title: 'Video One' }],
+    };
+    const streamsInfo = {
+      title: 'Stream Example - Streams',
+      webpage_url: 'https://www.youtube.com/@StreamExample/streams',
+      entries: [{ id: 'stream-one', title: 'Stream One' }],
+    };
+    installFakeYtDlpScript(`#!/bin/sh
+last_arg=""
+for arg in "$@"; do last_arg="$arg"; done
+case "$last_arg" in
+  */@StreamExample/videos) printf '%s\n' ${JSON.stringify(JSON.stringify(videosInfo))} ;;
+  */@StreamExample/streams) printf '%s\n' ${JSON.stringify(JSON.stringify(streamsInfo))} ;;
+  */@StreamExample/shorts) printf 'shorts failed' >&2; exit 5 ;;
+  */@StreamExample) printf '%s\n' ${JSON.stringify(JSON.stringify(channelRootInfo))} ;;
+esac
+`);
+
+    const result = await runYtDlpFetch({
+      url: 'https://www.youtube.com/@StreamExample',
+      mode: 'json',
+      cwd: process.cwd(),
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.errors, [
+      { strategy: 'yt-dlp', error: 'shorts: yt-dlp command exited with code 5' },
+    ]);
+    const parsed = JSON.parse(result.content ?? '{}') as {
+      sections: Array<{ type: string }>;
+      entries: Array<{ id: string }>;
+    };
+    assert.deepEqual(
+      parsed.sections.map((section) => section.type),
+      ['videos', 'streams'],
+    );
+    assert.deepEqual(
+      parsed.entries.map((entry) => entry.id),
+      ['video-one', 'stream-one'],
+    );
+  });
+
+  it('falls back to channel root entries when no expandable sections are present', async () => {
+    const channelRootInfo = {
+      id: '@NoSections',
+      title: 'No Sections',
+      webpage_url: 'https://www.youtube.com/@NoSections',
+      entries: [{ id: 'root-entry', title: 'Root Entry' }],
+    };
+    installFakeYtDlpScript(`#!/bin/sh
+printf '%s\n' ${JSON.stringify(JSON.stringify(channelRootInfo))}
+`);
+
+    const result = await runYtDlpFetch({
+      url: 'https://www.youtube.com/@NoSections',
+      mode: 'json',
+      cwd: process.cwd(),
+    });
+
+    assert.equal(result.ok, true);
+    const parsed = JSON.parse(result.content ?? '{}') as {
+      sections: Array<{ type: string; entries: Array<{ id: string }> }>;
+      entries: Array<{ id: string }>;
+    };
+    assert.deepEqual(parsed.sections, [
+      {
+        type: 'other',
+        title: 'No Sections',
+        url: 'https://www.youtube.com/@NoSections',
+        entries: [
+          {
+            id: 'root-entry',
+            title: 'Root Entry',
+            url: 'https://www.youtube.com/watch?v=root-entry',
+          },
+        ],
+      },
+    ]);
+    assert.deepEqual(
+      parsed.entries.map((entry) => entry.id),
+      ['root-entry'],
+    );
+  });
+
+  it('returns failures for yt-dlp command and JSON errors', async () => {
+    installFakeYtDlpScript(`#!/bin/sh
+last_arg=""
+for arg in "$@"; do last_arg="$arg"; done
+case "$last_arg" in
+  *exit-code) printf 'bad request' >&2; exit 4 ;;
+  *empty) exit 0 ;;
+  *invalid) printf 'not-json\n'; exit 0 ;;
+esac
+`);
+
+    const exitResult = await runYtDlpFetch({
+      url: 'https://www.youtube.com/watch?v=exit-code',
+      mode: 'markdown',
+      cwd: process.cwd(),
+    });
+    const emptyResult = await runYtDlpFetch({
+      url: 'https://www.youtube.com/watch?v=empty',
+      mode: 'markdown',
+      cwd: process.cwd(),
+    });
+    const invalidResult = await runYtDlpFetch({
+      url: 'https://www.youtube.com/watch?v=invalid',
+      mode: 'markdown',
+      cwd: process.cwd(),
+    });
+
+    assert.equal(exitResult.ok, false);
+    assert.deepEqual(exitResult.errors, [
+      { strategy: 'yt-dlp', error: 'yt-dlp command exited with code 4' },
+    ]);
+    assert.equal(emptyResult.ok, false);
+    assert.deepEqual(emptyResult.errors, [
+      { strategy: 'yt-dlp', error: 'yt-dlp returned empty JSON' },
+    ]);
+    assert.equal(invalidResult.ok, false);
+    assert.match(
+      invalidResult.errors[0]?.error ?? '',
+      /Unexpected token|not valid JSON|JSON Parse error/,
+    );
+  });
+
+  it('returns a missing executable error when yt-dlp is not installed', async () => {
+    process.env.PATH = binDir!;
+
+    const result = await runYtDlpFetch({
+      url: 'https://www.youtube.com/watch?v=missing',
+      mode: 'markdown',
+      cwd: process.cwd(),
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.errors[0]?.error ?? '', /spawn yt-dlp ENOENT|Executable not found/);
   });
 });
 
