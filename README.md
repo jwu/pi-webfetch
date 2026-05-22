@@ -1,8 +1,12 @@
 # pi-webfetch
 
-A [pi](https://github.com/earendil-works/pi-mono) package that adds a `webfetch` tool for fetching and cleaning URL content with [Scrapling](https://github.com/D4Vinci/Scrapling), [Defuddle](https://github.com/kepano/defuddle), `gh` for GitHub URLs, and `yt-dlp` for YouTube URLs.
+A [pi](https://github.com/earendil-works/pi-mono) package that adds a `webfetch` tool for reading web URLs as clean Markdown, HTML, text, or YouTube metadata JSON.
 
-Given a user-provided URL, `webfetch` routes GitHub URLs through GitHub CLI, YouTube URLs through `yt-dlp`, otherwise chooses a Scrapling fetcher strategy, runs Scrapling through its CLI shell, and returns cleaned Markdown/HTML/text/JSON content to pi.
+`webfetch` is optimized for agent use:
+
+- General web pages are cleaned into readable content.
+- GitHub URLs are fetched with `gh` for better repository, issue, PR, file, and directory results.
+- YouTube URLs are fetched with `yt-dlp` for video metadata, transcripts, playlists, and channel listings.
 
 ## Install
 
@@ -20,27 +24,88 @@ Or via local path in `~/.pi/agent/settings.json` while developing:
 
 ## Requirements
 
-`webfetch` calls Scrapling through:
+Install the optional CLI tools for the URL types you want to support:
 
-```bash
-scrapling shell -L warning -c "..."
+| URL type | Required executable | Notes |
+|---|---|---|
+| General web pages | `scrapling` | Used for non-GitHub, non-YouTube URLs |
+| GitHub / Gist | `gh` | Must be installed and authenticated for private or rate-limited content |
+| YouTube | `yt-dlp` | Used for videos, transcripts, playlists, Shorts, and channels |
+
+Defuddle is bundled as an npm dependency and is used by default to improve Markdown output for general web pages.
+
+## Tool
+
+### `webfetch`
+
+Fetch and clean an HTTP(S) URL.
+
+| Parameter | Type | Default | Description |
+|---|---:|---:|---|
+| `url` | string | required | HTTP(S) URL to inspect and fetch |
+| `mode` | `markdown` \| `html` \| `text` \| `json` | `markdown` | Output mode. `json` is supported for YouTube results. |
+
+Examples:
+
+```json
+{ "url": "https://example.com/article" }
 ```
 
-Make sure the `scrapling` executable is available in the environment where pi runs.
-
-YouTube URLs call `yt-dlp` through:
-
-```bash
-yt-dlp -J --skip-download --no-warnings ...
+```json
+{ "url": "https://github.com/jwu/pi-webfetch" }
 ```
 
-Make sure the `yt-dlp` executable is available in the environment where pi runs if you want to fetch YouTube metadata, playlists, or transcripts.
+```json
+{ "url": "https://www.youtube.com/watch?v=PIdETjcXNIk" }
+```
 
-Defuddle conversion is bundled as an npm dependency and is used by default for non-GitHub/non-YouTube Markdown output. It can be disabled in settings.
+```json
+{ "url": "https://www.youtube.com/@Brandon-Melville", "mode": "json" }
+```
+
+## What you get
+
+### General web pages
+
+Default output is readable Markdown. You can request raw-ish cleaned HTML or plain text with `mode: "html"` or `mode: "text"`.
+
+### GitHub URLs
+
+GitHub URLs are routed through `gh`, so common GitHub pages return useful CLI/API content instead of noisy browser HTML. Supported URL shapes include:
+
+- repositories
+- users
+- issues
+- pull requests
+- releases
+- Actions runs
+- gists
+- files and directories
+- commits and other API-backed paths
+
+### YouTube URLs
+
+YouTube URLs are routed through `yt-dlp`.
+
+Supported inputs include:
+
+- video URLs
+- `youtu.be` short links
+- playlists
+- channel handles, for example `https://www.youtube.com/@name`
+- channel Videos / Shorts / Streams tabs
+
+For videos, `webfetch` returns metadata and tries to include a transcript. Missing transcripts do not fail the request.
+
+For playlists, `webfetch` returns a flat list of entries.
+
+For channel root URLs, `webfetch` expands available Videos, Shorts, and Streams tabs and merges their entries into one channel result.
+
+`mode: "json"` returns a curated stable JSON shape for YouTube video, playlist, or channel data.
 
 ## Configuration
 
-Add `webfetch` settings to `.pi/settings.json` (project) or `~/.pi/agent/settings.json` (global) to override defaults:
+Add `webfetch` settings to `.pi/settings.json` (project) or `~/.pi/agent/settings.json` (global):
 
 ```json
 {
@@ -53,23 +118,7 @@ Add `webfetch` settings to `.pi/settings.json` (project) or `~/.pi/agent/setting
 }
 ```
 
-Defuddle behavior:
-
-| `webfetch.useDefuddle` | Markdown behavior |
-|---|---|
-| omitted | Scrapling fetches cleaned HTML, then Defuddle converts that HTML to Markdown |
-| `true` | Same as omitted: use Scrapling HTML plus Defuddle Markdown conversion |
-| `false` | Scrapling fetches and extracts Markdown directly |
-
-Quality judge behavior:
-
-| Setting | Default | Description |
-|---|---:|---|
-| `webfetch.qualityJudge` | `false` | When enabled, ask an LLM whether the fetched Markdown is usable before accepting a Scrapling strategy. If the judge returns unusable, `webfetch` records that strategy as failed and tries the next one. |
-| `webfetch.qualityJudgeModel` | current pi model | Optional judge model in `provider/model` form, for example `google/gemini-2.5-flash`. |
-| `webfetch.qualityJudgeThinkLevel` | `off` | Optional judge thinking level: `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. Unsupported levels are clamped for the selected model. |
-
-Project settings override global settings. For compatibility, the dotted key form also works:
+Project settings override global settings. The dotted key form also works:
 
 ```json
 {
@@ -80,61 +129,29 @@ Project settings override global settings. For compatibility, the dotted key for
 }
 ```
 
-The switch affects non-GitHub/non-YouTube Markdown output. Explicit `mode: "html"` or `mode: "text"` still uses direct extraction. GitHub URLs are handled by `gh`, YouTube URLs are handled by `yt-dlp`, and neither route uses Defuddle.
+### Settings
 
-## Tool
-
-### `webfetch`
-
-Fetch and clean an HTTP(S) URL with `gh` for GitHub URLs, `yt-dlp` for YouTube URLs, or Scrapling for other sites.
-
-| Parameter | Type | Default | Description |
-|---|---:|---:|---|
-| `url` | string | required | HTTP(S) URL to inspect and fetch |
-| `mode` | `markdown` \| `html` \| `text` \| `json` | `markdown` | Output mode. Markdown may be converted by Scrapling or Defuddle depending on settings. `json` is supported for YouTube `yt-dlp` routes. |
-
-## Fetch strategy
-
-For YouTube URLs, `webfetch` uses `yt-dlp` instead of Scrapling. Video URLs fetch metadata and try to include a transcript. Playlist URLs, including URLs with `list=`, fetch a flat playlist listing rather than every video's full details. Channel root URLs, such as `https://www.youtube.com/@name`, expand their Videos, Shorts, and Streams tabs as flat playlists and merge them into a channel result.
-
-Transcript selection prefers manual subtitles first. If manual subtitles are unavailable, automatic subtitles are selected by language priority: the video's declared language, then English, then Chinese variants. Missing transcripts do not fail the whole fetch when metadata is available.
-
-For non-GitHub and non-YouTube URLs, `webfetch` uses an explicit built-in site-to-strategy mapping first.
-
-Current mapping:
-
-| Site | Strategy | Reason |
-|---|---|---|
-| `shadertoy.com` and subdomains | `StealthyFetcher` | Cloudflare protection; static/dynamic fetchers often return 403 or challenge HTML |
-| `x.com`, `twitter.com` and subdomains | `StealthyFetcher` | SPA and anti-bot behavior; future login-state support can build on this |
-
-For sites that are not in the mapping, `webfetch` uses sequential escalation from the Scrapling guide:
-
-1. `Fetcher.get(url)` — fastest static fetcher
-2. if it fails, returns HTTP `>= 400`, or extracts empty content, try `DynamicFetcher.fetch(url, network_idle=True, wait=3000)`
-3. if that also fails or extracts empty content, try `StealthyFetcher.fetch(url, network_idle=True, wait=3000)`
-
-Each failed attempt is recorded in `errors`, so the result explains why `webfetch` adjusted to the next strategy.
-
-When Defuddle is enabled for Markdown output, each Scrapling strategy is considered successful only after both steps succeed: Scrapling extracts cleaned HTML, then Defuddle returns non-empty Markdown. If Defuddle fails or returns empty Markdown for a strategy, that strategy is recorded as failed and `webfetch` continues to the next Scrapling strategy.
-
-When `webfetch.qualityJudge` is enabled, the selected judge model receives a sample of the fetched Markdown and returns a JSON usability decision. Unusable content, such as boilerplate, captcha/challenge pages, error pages, or unrelated content, is treated as a failed strategy so `webfetch` can continue to the next Scrapling strategy. If the judge cannot run, `webfetch` fails open and uses the fetched content rather than making the tool unusable.
-
-Content extraction uses:
-
-```python
-Convertor._extract_content(page, extraction_type=mode, main_content_only=True)
-```
-
-When `webfetch.useDefuddle` is not `false` and Markdown output is requested, `mode` sent to Scrapling is `html`; the returned cleaned HTML is then parsed with Defuddle using `markdown: true`.
+| Setting | Default | Description |
+|---|---:|---|
+| `webfetch.useDefuddle` | `true` | Use Defuddle to convert cleaned HTML to Markdown for general web pages. Set `false` to use Scrapling Markdown directly. |
+| `webfetch.qualityJudge` | `false` | Ask a model to reject unusable fetched Markdown, such as boilerplate, captcha/challenge pages, or unrelated content. |
+| `webfetch.qualityJudgeModel` | current pi model | Optional judge model in `provider/model` form. |
+| `webfetch.qualityJudgeThinkLevel` | `off` | Optional judge thinking level: `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. |
 
 ## Output behavior
 
 - Only `http://` and `https://` URLs are accepted.
-- GitHub URLs require `gh`; YouTube URLs require `yt-dlp`. Missing executables return a friendly failed tool result.
-- Failed Scrapling strategies are included in tool details.
-- Tool output is truncated with pi's standard limits: 2000 lines or 50 KiB, whichever is hit first.
+- Missing CLI executables return a friendly failed tool result.
+- Output is truncated with pi's standard limits: 2000 lines or 50 KiB, whichever is hit first.
 - If output is truncated, the full extracted content is saved to a temp file and the path is included in the result.
+
+## Internal docs
+
+Implementation details are documented in:
+
+- [`docs/scrapling.md`](docs/scrapling.md)
+- [`docs/gh.md`](docs/gh.md)
+- [`docs/yt-dlp.md`](docs/yt-dlp.md)
 
 ## Development
 
