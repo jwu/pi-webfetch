@@ -1,3 +1,15 @@
+# [1.2.0](https://github.com/jwu/pi-webfetch/compare/v1.1.0...v1.2.0) (2026-05-22)
+
+
+### Bug Fixes
+
+* mark failed webfetch results as tool errors ([35b55b7](https://github.com/jwu/pi-webfetch/commit/35b55b736b6876461442a9df219b7b136fc8e001))
+
+
+### Features
+
+* route youtube urls through yt-dlp ([3e965f5](https://github.com/jwu/pi-webfetch/commit/3e965f5ce518a2a36a7970a094c990531b03ea56))
+
 # [1.1.0](https://github.com/jwu/pi-webfetch/compare/v1.0.0...v1.1.0) (2026-05-20)
 
 
