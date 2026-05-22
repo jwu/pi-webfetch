@@ -1,8 +1,8 @@
 export const DEFAULT_MODE = 'markdown' as const;
 
-export type ExtractionMode = 'markdown' | 'html' | 'text';
+export type ExtractionMode = 'markdown' | 'html' | 'text' | 'json';
 export type FetchStrategy = 'fetcher' | 'dynamic' | 'stealthy';
-export type FetcherName = FetchStrategy | 'gh';
+export type FetcherName = FetchStrategy | 'gh' | 'yt-dlp';
 
 export interface SiteStrategyMapping {
   domains: string[];

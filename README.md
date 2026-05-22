@@ -1,8 +1,8 @@
 # pi-webfetch
 
-A [pi](https://github.com/earendil-works/pi-mono) package that adds a `webfetch` tool for fetching and cleaning URL content with [Scrapling](https://github.com/D4Vinci/Scrapling), [Defuddle](https://github.com/kepano/defuddle), and `gh` for GitHub URLs.
+A [pi](https://github.com/earendil-works/pi-mono) package that adds a `webfetch` tool for fetching and cleaning URL content with [Scrapling](https://github.com/D4Vinci/Scrapling), [Defuddle](https://github.com/kepano/defuddle), `gh` for GitHub URLs, and `yt-dlp` for YouTube URLs.
 
-Given a user-provided URL, `webfetch` routes GitHub URLs through GitHub CLI, otherwise chooses a Scrapling fetcher strategy, runs Scrapling through its CLI shell, and returns cleaned Markdown/HTML/text content to pi.
+Given a user-provided URL, `webfetch` routes GitHub URLs through GitHub CLI, YouTube URLs through `yt-dlp`, otherwise chooses a Scrapling fetcher strategy, runs Scrapling through its CLI shell, and returns cleaned Markdown/HTML/text/JSON content to pi.
 
 ## Install
 
@@ -28,7 +28,15 @@ scrapling shell -L warning -c "..."
 
 Make sure the `scrapling` executable is available in the environment where pi runs.
 
-Defuddle conversion is bundled as an npm dependency and is used by default for non-GitHub Markdown output. It can be disabled in settings.
+YouTube URLs call `yt-dlp` through:
+
+```bash
+yt-dlp -J --skip-download --no-warnings ...
+```
+
+Make sure the `yt-dlp` executable is available in the environment where pi runs if you want to fetch YouTube metadata, playlists, or transcripts.
+
+Defuddle conversion is bundled as an npm dependency and is used by default for non-GitHub/non-YouTube Markdown output. It can be disabled in settings.
 
 ## Configuration
 
@@ -72,22 +80,26 @@ Project settings override global settings. For compatibility, the dotted key for
 }
 ```
 
-The switch affects non-GitHub Markdown output. Explicit `mode: "html"` or `mode: "text"` still uses direct extraction. GitHub URLs are handled by `gh` and do not use Defuddle.
+The switch affects non-GitHub/non-YouTube Markdown output. Explicit `mode: "html"` or `mode: "text"` still uses direct extraction. GitHub URLs are handled by `gh`, YouTube URLs are handled by `yt-dlp`, and neither route uses Defuddle.
 
 ## Tool
 
 ### `webfetch`
 
-Fetch and clean an HTTP(S) URL with `gh` for GitHub URLs or Scrapling for other sites.
+Fetch and clean an HTTP(S) URL with `gh` for GitHub URLs, `yt-dlp` for YouTube URLs, or Scrapling for other sites.
 
 | Parameter | Type | Default | Description |
 |---|---:|---:|---|
 | `url` | string | required | HTTP(S) URL to inspect and fetch |
-| `mode` | `markdown` \| `html` \| `text` | `markdown` | Output mode. Markdown may be converted by Scrapling or Defuddle depending on settings. |
+| `mode` | `markdown` \| `html` \| `text` \| `json` | `markdown` | Output mode. Markdown may be converted by Scrapling or Defuddle depending on settings. `json` is supported for YouTube `yt-dlp` routes. |
 
 ## Fetch strategy
 
-For non-GitHub URLs, `webfetch` uses an explicit built-in site-to-strategy mapping first.
+For YouTube URLs, `webfetch` uses `yt-dlp` instead of Scrapling. Video URLs fetch metadata and try to include a transcript. Playlist URLs, including URLs with `list=`, fetch a flat playlist listing rather than every video's full details. Channel root URLs, such as `https://www.youtube.com/@name`, expand their Videos, Shorts, and Streams tabs as flat playlists and merge them into a channel result.
+
+Transcript selection prefers manual subtitles first. If manual subtitles are unavailable, automatic subtitles are selected by language priority: the video's declared language, then English, then Chinese variants. Missing transcripts do not fail the whole fetch when metadata is available.
+
+For non-GitHub and non-YouTube URLs, `webfetch` uses an explicit built-in site-to-strategy mapping first.
 
 Current mapping:
 
@@ -119,6 +131,7 @@ When `webfetch.useDefuddle` is not `false` and Markdown output is requested, `mo
 ## Output behavior
 
 - Only `http://` and `https://` URLs are accepted.
+- GitHub URLs require `gh`; YouTube URLs require `yt-dlp`. Missing executables return a friendly failed tool result.
 - Failed Scrapling strategies are included in tool details.
 - Tool output is truncated with pi's standard limits: 2000 lines or 50 KiB, whichever is hit first.
 - If output is truncated, the full extracted content is saved to a temp file and the path is included in the result.

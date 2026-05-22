@@ -20,7 +20,9 @@
     "fetch",
     "web",
     "url",
-    "markdown"
+    "markdown",
+    "youtube",
+    "yt-dlp"
   ],
   "author": "jwu",
   "license": "MIT",

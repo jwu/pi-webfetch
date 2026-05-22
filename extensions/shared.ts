@@ -125,7 +125,7 @@ export function normalizeUrl(rawUrl: string): string {
 }
 
 export function normalizeMode(mode: unknown): ExtractionMode {
-  if (mode === 'html' || mode === 'text' || mode === 'markdown') return mode;
+  if (mode === 'html' || mode === 'text' || mode === 'markdown' || mode === 'json') return mode;
   return DEFAULT_MODE;
 }
 

@@ -216,6 +216,16 @@ export async function runScraplingFetch(
   const mode = normalizeMode(options.mode);
   const strategies = options.strategies?.length ? options.strategies : strategiesForUrl(url);
   const strategyReason = strategyReasonForUrl(url);
+
+  if (mode === 'json') {
+    return {
+      ok: false,
+      url,
+      mode,
+      strategyReason,
+      errors: [{ strategy: strategies[0], error: 'json mode is only supported by yt-dlp routes.' }],
+    };
+  }
   options.onProgress?.({
     phase: 'starting',
     message: `starting scrapling shell (${strategies.join(' → ')})`,

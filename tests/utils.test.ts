@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -10,9 +10,12 @@ import {
   SITE_STRATEGY_MAPPINGS,
   ghRouteForUrl,
   isGitHubUrl,
+  isYouTubeUrl,
   normalizeMode,
   normalizeUrl,
+  parseVttTranscript,
   readWebFetchSettings,
+  runYtDlpFetch,
   siteStrategyMappingForUrl,
   strategiesForUrl,
   strategyReasonForUrl,
@@ -39,11 +42,12 @@ describe('normalizeMode', () => {
     assert.equal(normalizeMode('markdown'), 'markdown');
     assert.equal(normalizeMode('html'), 'html');
     assert.equal(normalizeMode('text'), 'text');
+    assert.equal(normalizeMode('json'), 'json');
   });
 
   it('falls back to markdown for unknown modes', () => {
     assert.equal(normalizeMode(undefined), 'markdown');
-    assert.equal(normalizeMode('json'), 'markdown');
+    assert.equal(normalizeMode('xml'), 'markdown');
   });
 });
 
@@ -162,6 +166,212 @@ describe('strategy mapping', () => {
   it('prefers StealthyFetcher for Twitter/X', () => {
     assert.deepEqual(strategiesForUrl('https://x.com/jack'), ['stealthy']);
     assert.deepEqual(strategiesForUrl('https://twitter.com/jack'), ['stealthy']);
+  });
+});
+
+describe('YouTube routing', () => {
+  it('detects YouTube URL variants', () => {
+    assert.equal(isYouTubeUrl('https://www.youtube.com/watch?v=abc123'), true);
+    assert.equal(isYouTubeUrl('https://m.youtube.com/watch?v=abc123'), true);
+    assert.equal(isYouTubeUrl('https://music.youtube.com/watch?v=abc123'), true);
+    assert.equal(isYouTubeUrl('https://youtu.be/abc123'), true);
+    assert.equal(isYouTubeUrl('https://www.youtube-nocookie.com/embed/abc123'), true);
+    assert.equal(isYouTubeUrl('https://example.com/watch?v=abc123'), false);
+  });
+
+  it('cleans VTT subtitles into transcript text', () => {
+    const transcript = parseVttTranscript(
+      `WEBVTT\nKind: captions\nLanguage: en\n\n00:00:00.000 --> 00:00:01.000\n<c>Hello &amp; welcome</c>\n\n00:00:01.000 --> 00:00:02.000\nHello &amp; welcome\n\n00:00:02.000 --> 00:00:03.000\nWorld`,
+    );
+
+    assert.equal(transcript, 'Hello & welcome\nWorld');
+  });
+});
+
+describe('runYtDlpFetch', () => {
+  let originalPath: string | undefined;
+  let binDir: string | undefined;
+
+  beforeEach(() => {
+    originalPath = process.env.PATH;
+    binDir = mkdtempSync('pi-webfetch-ytdlp-bin-');
+    process.env.PATH = `${binDir}:${originalPath ?? ''}`;
+  });
+
+  afterEach(() => {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+
+    if (binDir) rmSync(binDir, { recursive: true, force: true });
+  });
+
+  function installFakeYtDlp() {
+    const videoInfo = {
+      id: 'abc123',
+      title: 'Example video',
+      webpage_url: 'https://www.youtube.com/watch?v=abc123',
+      channel: 'Example channel',
+      language: 'fr',
+      duration: 62,
+      automatic_captions: { en: [{}] },
+    };
+    const playlistInfo = {
+      id: 'PL123',
+      title: 'Example playlist',
+      webpage_url: 'https://www.youtube.com/playlist?list=PL123',
+      entries: [
+        { id: 'one', title: 'One' },
+        { id: 'two', title: 'Two', webpage_url: 'https://www.youtube.com/watch?v=two' },
+      ],
+    };
+    const channelRootInfo = {
+      id: '@Example',
+      title: 'Example Channel',
+      webpage_url: 'https://www.youtube.com/@Example',
+      channel: 'Example Channel',
+      entries: [
+        {
+          id: 'UC123',
+          title: 'Example Channel - Videos',
+          url: 'https://www.youtube.com/@Example/videos',
+        },
+        {
+          id: 'UC123',
+          title: 'Example Channel - Shorts',
+          url: 'https://www.youtube.com/@Example/shorts',
+        },
+      ],
+    };
+    const channelVideosInfo = {
+      id: 'UC123',
+      title: 'Example Channel - Videos',
+      webpage_url: 'https://www.youtube.com/@Example/videos',
+      entries: [{ id: 'long-one', title: 'Long One', duration: 120 }],
+    };
+    const channelShortsInfo = {
+      id: 'UC123',
+      title: 'Example Channel - Shorts',
+      webpage_url: 'https://www.youtube.com/@Example/shorts',
+      entries: [{ id: 'short-one', title: 'Short One', view_count: 42 }],
+    };
+    const script = `#!/bin/sh
+last_arg=""
+for arg in "$@"; do
+  last_arg="$arg"
+done
+if echo " $* " | grep -q -- " -J "; then
+  if echo " $* " | grep -q -- " --flat-playlist "; then
+    case "$last_arg" in
+      */@Example/videos) printf '%s\n' ${JSON.stringify(JSON.stringify(channelVideosInfo))} ;;
+      */@Example/shorts) printf '%s\n' ${JSON.stringify(JSON.stringify(channelShortsInfo))} ;;
+      */@Example) printf '%s\n' ${JSON.stringify(JSON.stringify(channelRootInfo))} ;;
+      *) printf '%s\n' ${JSON.stringify(JSON.stringify(playlistInfo))} ;;
+    esac
+  else
+    printf '%s\n' ${JSON.stringify(JSON.stringify(videoInfo))}
+  fi
+  exit 0
+fi
+output_dir=""
+previous=""
+for arg in "$@"; do
+  if [ "$previous" = "--paths" ]; then
+    output_dir="$arg"
+    break
+  fi
+  previous="$arg"
+done
+mkdir -p "$output_dir"
+cat > "$output_dir/abc123.en.vtt" <<'VTT'
+WEBVTT
+
+00:00:00.000 --> 00:00:01.000
+Hello &amp; welcome
+
+00:00:01.000 --> 00:00:02.000
+World
+VTT
+`;
+    const executable = join(binDir!, 'yt-dlp');
+    writeFileSync(executable, script);
+    chmodSync(executable, 0o755);
+  }
+
+  it('returns YouTube video metadata with transcript markdown', async () => {
+    installFakeYtDlp();
+
+    const result = await runYtDlpFetch({
+      url: 'https://youtu.be/abc123',
+      mode: 'markdown',
+      cwd: process.cwd(),
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.strategy, 'yt-dlp');
+    assert.equal(result.mode, 'markdown');
+    assert.match(result.content ?? '', /# Example video/);
+    assert.match(result.content ?? '', /Channel: Example channel/);
+    assert.match(result.content ?? '', /Hello & welcome\nWorld/);
+    assert.deepEqual(result.errors, []);
+  });
+
+  it('returns flat playlist data as curated JSON', async () => {
+    installFakeYtDlp();
+
+    const result = await runYtDlpFetch({
+      url: 'https://www.youtube.com/playlist?list=PL123',
+      mode: 'json',
+      cwd: process.cwd(),
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.mode, 'json');
+    const parsed = JSON.parse(result.content ?? '{}') as {
+      type: string;
+      entries: Array<{ id: string; url: string }>;
+    };
+    assert.equal(parsed.type, 'youtube_playlist');
+    assert.deepEqual(
+      parsed.entries.map((entry) => entry.url),
+      ['https://www.youtube.com/watch?v=one', 'https://www.youtube.com/watch?v=two'],
+    );
+  });
+
+  it('expands channel root URLs into videos and shorts sections', async () => {
+    installFakeYtDlp();
+    const messages: string[] = [];
+
+    const result = await runYtDlpFetch({
+      url: 'https://www.youtube.com/@Example',
+      mode: 'json',
+      cwd: process.cwd(),
+      onProgress: (progress) => messages.push(progress.message),
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.mode, 'json');
+    assert.match(result.strategyReason ?? '', /expand channel videos and shorts/);
+    assert.ok(messages.includes('fetching channel sections with yt-dlp'));
+    assert.ok(messages.includes('fetching channel videos with yt-dlp'));
+    assert.ok(messages.includes('fetching channel shorts with yt-dlp'));
+
+    const parsed = JSON.parse(result.content ?? '{}') as {
+      type: string;
+      entries: Array<{ id: string; url: string; duration?: number; viewCount?: number }>;
+      sections: Array<{ type: string; entries: Array<{ id: string }> }>;
+    };
+    assert.equal(parsed.type, 'youtube_channel');
+    assert.deepEqual(
+      parsed.sections.map((section) => section.type),
+      ['videos', 'shorts'],
+    );
+    assert.deepEqual(
+      parsed.entries.map((entry) => [entry.id, entry.url, entry.duration, entry.viewCount]),
+      [
+        ['long-one', 'https://www.youtube.com/watch?v=long-one', 120, undefined],
+        ['short-one', 'https://www.youtube.com/watch?v=short-one', undefined, 42],
+      ],
+    );
   });
 });
 

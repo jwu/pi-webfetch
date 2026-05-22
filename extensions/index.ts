@@ -15,6 +15,7 @@ import { Type } from 'typebox';
 import { convertHtmlWithDefuddle } from './cli/defuddle.js';
 import { isGitHubUrl, runGhFetch } from './cli/gh.js';
 import { runScraplingFetch, strategiesForUrl } from './cli/scrapling.js';
+import { isYouTubeUrl, runYtDlpFetch } from './cli/ytdlp.js';
 import { normalizeMode, persistFullContent, readWebFetchSettings } from './shared.js';
 import {
   DEFAULT_MODE,
@@ -27,10 +28,15 @@ import {
 
 const WebFetchParams = Type.Object({
   url: Type.String({
-    description: 'HTTP or HTTPS URL to inspect and fetch with Scrapling.',
+    description: 'HTTP or HTTPS URL to inspect and fetch.',
   }),
   mode: Type.Optional(
-    Type.Union([Type.Literal('markdown'), Type.Literal('html'), Type.Literal('text')]),
+    Type.Union([
+      Type.Literal('markdown'),
+      Type.Literal('html'),
+      Type.Literal('text'),
+      Type.Literal('json'),
+    ]),
   ),
 });
 
@@ -60,7 +66,7 @@ export interface WebFetchDetails {
   strategyReason?: string;
   mode: ExtractionMode;
   scraplingMode?: ExtractionMode;
-  converter: 'scrapling' | 'defuddle' | 'gh';
+  converter: 'scrapling' | 'defuddle' | 'gh' | 'yt-dlp';
   useDefuddle: boolean;
   phase?: WebFetchProgress['phase'] | 'converting' | 'judging' | 'done';
   currentStrategy?: string;
@@ -101,6 +107,7 @@ export type QualityJudge = (input: QualityJudgeInput) => Promise<QualityJudgeDec
 function extensionForMode(mode: ExtractionMode): string {
   if (mode === 'html') return 'html';
   if (mode === 'text') return 'txt';
+  if (mode === 'json') return 'json';
   return 'md';
 }
 
@@ -119,6 +126,8 @@ function formatSuccess(
     fullOutputPath?: string;
   },
 ): string {
+  if (result.mode === 'json') return content;
+
   const header = [
     `URL: ${result.finalUrl ?? result.url}`,
     result.status !== undefined && result.status !== null ? `Status: ${result.status}` : undefined,
@@ -144,15 +153,22 @@ function formatGitHubFailureHint(stderr: string | undefined): string {
   return 'GitHub URL matched. Make sure GitHub CLI is installed and authenticated via `gh auth status`.';
 }
 
+function formatYouTubeFailureHint(): string {
+  return 'YouTube URL matched. Make sure yt-dlp is installed and available in PATH.';
+}
+
 function formatFailure(result: WebFetchResultLike): string {
   const stderr = result.stderr?.trim();
   const isGh = isGitHubUrl(result.url);
+  const isYouTube = isYouTubeUrl(result.url);
   const hint = [
     'Web fetch failed.',
     '',
     isGh
       ? formatGitHubFailureHint(stderr)
-      : 'Fallback fetch uses Scrapling + Defuddle. Make sure Scrapling is available via `scrapling shell -L warning -c "print(\'ok\')"`.',
+      : isYouTube
+        ? formatYouTubeFailureHint()
+        : 'Fallback fetch uses Scrapling + Defuddle. Make sure Scrapling is available via `scrapling shell -L warning -c "print(\'ok\')"`.',
     '',
     'Errors:',
     formatErrors(result.errors),
@@ -183,6 +199,7 @@ function emitToolProgress(
 
 function formatPipeline(details: WebFetchDetails): string {
   if (details.converter === 'gh') return `${details.mode} via gh`;
+  if (details.converter === 'yt-dlp') return `${details.mode} via yt-dlp`;
   if (details.mode === 'markdown') {
     return details.converter === 'defuddle' ? 'markdown via defuddle' : 'markdown via scrapling';
   }
@@ -200,13 +217,15 @@ function formatRenderSummary(details: WebFetchDetails, theme: any): string {
       details.phase === 'failed'
         ? theme.fg('warning', details.phase)
         : theme.fg('accent', details.phase);
-    const cliName = details.converter === 'gh' ? 'gh' : 'scrapling';
+    const cliName =
+      details.converter === 'gh' ? 'gh' : details.converter === 'yt-dlp' ? 'yt-dlp' : 'scrapling';
     const cli = theme.fg('customMessageLabel', cliName);
     const strategy =
       details.currentStrategy && details.currentStrategy !== cliName
         ? theme.fg('dim', ` ${details.currentStrategy}`)
         : '';
-    return `${phase}: ${cli}${strategy}`;
+    const message = details.message ? theme.fg('dim', ` — ${details.message}`) : '';
+    return `${phase}: ${cli}${strategy}${message}`;
   }
 
   const status =
@@ -588,18 +607,20 @@ export function createWebFetchTool(
   defuddleConverter: DefuddleConverter = convertHtmlWithDefuddle,
   ghRunner: WebFetchRunner = runGhFetch,
   qualityJudge: QualityJudge = runQualityJudge,
+  ytDlpRunner: WebFetchRunner = runYtDlpFetch,
 ) {
   return {
     name: 'webfetch',
     label: 'Web Fetch',
     description:
-      'Inspect a user-provided HTTP(S) URL. GitHub URLs are fetched with gh; all other URLs fall back to Scrapling plus Defuddle for readable markdown.',
-    promptSnippet: 'Fetch and clean information from HTTP(S) URLs using gh or Scrapling.',
+      'Inspect a user-provided HTTP(S) URL. GitHub URLs are fetched with gh, YouTube URLs with yt-dlp, and all other URLs fall back to Scrapling plus Defuddle for readable markdown.',
+    promptSnippet: 'Fetch and clean information from HTTP(S) URLs using gh, yt-dlp, or Scrapling.',
     promptGuidelines: [
       'Use webfetch when the user provides a URL and asks to inspect, fetch, read, summarize, or analyze its content.',
       'webfetch routes github.com URLs through `gh`; if GitHub CLI is unavailable or unauthenticated, report the tool error and do not invent fetched content.',
-      'For non-GitHub URLs, webfetch falls back to Scrapling through `scrapling shell`; if Scrapling is unavailable, report the tool error and do not invent fetched content.',
-      'webfetch defaults to markdown extraction. Use mode="html" only when raw cleaned HTML is needed, and mode="text" for plain text.',
+      'webfetch routes YouTube URLs through `yt-dlp`; if yt-dlp is unavailable, report the tool error and do not invent fetched content.',
+      'For non-GitHub and non-YouTube URLs, webfetch falls back to Scrapling through `scrapling shell`; if Scrapling is unavailable, report the tool error and do not invent fetched content.',
+      'webfetch defaults to markdown extraction. Use mode="html" only when raw cleaned HTML is needed, mode="text" for plain text, and mode="json" for YouTube yt-dlp metadata.',
       'For fallback markdown, webfetch asks Scrapling for cleaned HTML and converts it to Markdown with Defuddle by default. Set { "webfetch": { "useDefuddle": false } } to skip Defuddle.',
       'If webfetch output is truncated and includes a Full output path, use the read tool on that path when complete content is needed.',
       'Evaluate fetched content quality before relying on it; if it looks like boilerplate, a captcha/challenge page, or unrelated content, tell the user instead of treating it as authoritative.',
@@ -616,16 +637,26 @@ export function createWebFetchTool(
     ) {
       const mode = normalizeMode(params.mode ?? DEFAULT_MODE);
       const selectedRunner =
-        isGitHubUrl(params.url) && runner === runScraplingFetch ? ghRunner : runner;
+        runner === runScraplingFetch && isGitHubUrl(params.url)
+          ? ghRunner
+          : runner === runScraplingFetch && isYouTubeUrl(params.url)
+            ? ytDlpRunner
+            : runner;
       const settings = settingsReader(ctx.cwd);
       const useDefuddle =
         selectedRunner !== ghRunner &&
+        selectedRunner !== ytDlpRunner &&
         mode === 'markdown' &&
         (settings.useDefuddle ?? selectedRunner === runScraplingFetch);
       const scraplingMode: ExtractionMode = useDefuddle ? 'html' : mode;
-      const detailScraplingMode = selectedRunner === ghRunner ? undefined : scraplingMode;
+      const detailScraplingMode =
+        selectedRunner === ghRunner || selectedRunner === ytDlpRunner ? undefined : scraplingMode;
       let converter: WebFetchDetails['converter'] =
-        selectedRunner === ghRunner ? 'gh' : 'scrapling';
+        selectedRunner === ghRunner
+          ? 'gh'
+          : selectedRunner === ytDlpRunner
+            ? 'yt-dlp'
+            : 'scrapling';
       emitToolProgress(onUpdate, params, {
         url: params.url,
         mode,

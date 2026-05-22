@@ -212,6 +212,116 @@ describe('webfetch extension', () => {
     assert.doesNotMatch(result.content[0].text, /gh auth status/);
   });
 
+  it('routes YouTube URLs to yt-dlp and supports json mode', async () => {
+    let ytDlpCalled = false;
+    let converterCalled = false;
+    const ytDlpRunner: WebFetchRunner = async ({ url, mode }) => {
+      ytDlpCalled = true;
+      return {
+        ok: true,
+        url,
+        finalUrl: 'https://www.youtube.com/watch?v=abc123',
+        strategy: 'yt-dlp',
+        strategyReason: 'YouTube video URL matched; fetch metadata and transcript with yt-dlp.',
+        mode: mode ?? 'markdown',
+        content: JSON.stringify({
+          type: 'youtube_video',
+          id: 'abc123',
+          title: 'Example video',
+          transcript: { source: 'automatic', language: 'en', text: 'Hello world' },
+        }),
+        contentLength: 118,
+        errors: [],
+      };
+    };
+
+    const tool = createWebFetchTool(
+      undefined,
+      () => ({ useDefuddle: true }),
+      async () => {
+        converterCalled = true;
+        return 'converted';
+      },
+      undefined,
+      undefined,
+      ytDlpRunner,
+    );
+    const result = await tool.execute(
+      'call-1',
+      { url: 'https://www.youtube.com/watch?v=abc123', mode: 'json' },
+      undefined,
+      undefined,
+      { cwd: process.cwd() },
+    );
+
+    assert.equal(ytDlpCalled, true);
+    assert.equal(converterCalled, false);
+    assert.match(result.content[0].text, /^\{/);
+    assert.match(result.content[0].text, /"type":"youtube_video"/);
+    assert.deepEqual(result.details, {
+      url: 'https://www.youtube.com/watch?v=abc123',
+      finalUrl: 'https://www.youtube.com/watch?v=abc123',
+      status: undefined,
+      strategy: 'yt-dlp',
+      strategyReason: 'YouTube video URL matched; fetch metadata and transcript with yt-dlp.',
+      mode: 'json',
+      scraplingMode: undefined,
+      converter: 'yt-dlp',
+      useDefuddle: false,
+      contentLength: 118,
+      fullOutputPath: undefined,
+      truncation: (result.details as { truncation: unknown }).truncation,
+      phase: 'done',
+      errors: [],
+    });
+  });
+
+  it('renders YouTube dependency failures with a yt-dlp install hint', async () => {
+    const ytDlpRunner: WebFetchRunner = async ({ url, mode }) => ({
+      ok: false,
+      url,
+      strategy: 'yt-dlp',
+      strategyReason: 'YouTube video URL matched; fetch metadata and transcript with yt-dlp.',
+      mode: mode ?? 'markdown',
+      errors: [{ strategy: 'yt-dlp', error: 'spawn yt-dlp ENOENT' }],
+    });
+
+    const tool = createWebFetchTool(
+      undefined,
+      () => ({}),
+      undefined,
+      undefined,
+      undefined,
+      ytDlpRunner,
+    );
+    const result = await tool.execute(
+      'call-1',
+      { url: 'https://youtu.be/abc123' },
+      undefined,
+      undefined,
+      { cwd: process.cwd() },
+    );
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /yt-dlp is installed/);
+    assert.match(result.content[0].text, /spawn yt-dlp ENOENT/);
+    assert.doesNotMatch(result.content[0].text, /Scrapling \+ Defuddle/);
+  });
+
+  it('returns a clear error for json mode on Scrapling routes', async () => {
+    const tool = createWebFetchTool();
+    const result = await tool.execute(
+      'call-1',
+      { url: 'https://example.com', mode: 'json' },
+      undefined,
+      undefined,
+      { cwd: process.cwd() },
+    );
+
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /json mode is only supported by yt-dlp routes/);
+  });
+
   it('returns fetched Scrapling content from the runner', async () => {
     const tool = createWebFetchTool(fakeRunner());
     const result = await tool.execute(
@@ -562,7 +672,7 @@ describe('webfetch extension', () => {
 
     assert.match(
       text,
-      /^\[dim\]└─ \[\/dim\]\[accent\]trying\[\/accent\]: \[customMessageLabel\]scrapling\[\/customMessageLabel\]\[dim\] fetcher\[\/dim\]/,
+      /^\[dim\]└─ \[\/dim\]\[accent\]trying\[\/accent\]: \[customMessageLabel\]scrapling\[\/customMessageLabel\]\[dim\] fetcher\[\/dim\]\[dim\] — trying fetcher\[\/dim\]/,
     );
   });
 
