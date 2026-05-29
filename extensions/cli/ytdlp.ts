@@ -367,6 +367,10 @@ function decodeHtmlEntities(text: string): string {
     );
 }
 
+function isBotDetectionError(stderr: string): boolean {
+  return /sign in to confirm/i.test(stderr);
+}
+
 export function parseVttTranscript(vtt: string): string {
   const transcriptLines: string[] = [];
   let previous = '';
@@ -462,38 +466,82 @@ async function findVttFiles(directory: string): Promise<string[]> {
   return files.flat();
 }
 
+function buildTranscriptArgs(options: {
+  url: string;
+  source: TranscriptResult['source'];
+  language: string;
+  tempDir: string;
+  cookiesFromBrowser?: string;
+}): string[] {
+  const args = ['--skip-download', '--no-warnings', '--no-playlist'];
+  if (options.cookiesFromBrowser) {
+    args.push('--cookies-from-browser', options.cookiesFromBrowser);
+  }
+  args.push(
+    options.source === 'manual' ? '--write-subs' : '--write-auto-subs',
+    '--sub-langs',
+    options.language,
+    '--sub-format',
+    'vtt',
+    '--paths',
+    options.tempDir,
+    '-o',
+    '%(id)s.%(ext)s',
+    options.url,
+  );
+  return args;
+}
+
 async function downloadTranscript(options: {
   url: string;
   cwd: string;
   signal?: AbortSignal;
   source: TranscriptResult['source'];
   language: string;
+  useCookies?: boolean;
 }): Promise<{ transcript?: TranscriptResult; error?: string; stdout?: string; stderr?: string }> {
   const tempDir = await mkdtemp(join(tmpdir(), 'pi-webfetch-ytdlp-'));
   try {
-    const processResult = await runProcess(
+    let processResult = await runProcess(
       'yt-dlp',
-      [
-        '--skip-download',
-        '--no-warnings',
-        '--no-playlist',
-        options.source === 'manual' ? '--write-subs' : '--write-auto-subs',
-        '--sub-langs',
-        options.language,
-        '--sub-format',
-        'vtt',
-        '--paths',
+      buildTranscriptArgs({
+        url: options.url,
+        source: options.source,
+        language: options.language,
         tempDir,
-        '-o',
-        '%(id)s.%(ext)s',
-        options.url,
-      ],
+        cookiesFromBrowser: options.useCookies ? 'chrome' : undefined,
+      }),
       {
         cwd: options.cwd,
         signal: options.signal,
         timeoutMs: YTDLP_COMMAND_TIMEOUT_MS,
       },
     );
+
+    if (
+      processResult.exitCode !== 0 &&
+      !processResult.aborted &&
+      !processResult.timedOut &&
+      isBotDetectionError(processResult.stderr) &&
+      !options.useCookies &&
+      !options.signal?.aborted
+    ) {
+      processResult = await runProcess(
+        'yt-dlp',
+        buildTranscriptArgs({
+          url: options.url,
+          source: options.source,
+          language: options.language,
+          tempDir,
+          cookiesFromBrowser: 'chrome',
+        }),
+        {
+          cwd: options.cwd,
+          signal: options.signal,
+          timeoutMs: YTDLP_COMMAND_TIMEOUT_MS,
+        },
+      );
+    }
 
     if (processResult.aborted) return { error: 'yt-dlp subtitle command aborted' };
     if (processResult.timedOut) {
@@ -537,27 +585,69 @@ function parseInfoJson(raw: string): YtDlpInfo {
   return parsed as YtDlpInfo;
 }
 
+function buildYtDlpInfoArgs(
+  url: string,
+  flatPlaylist: boolean,
+  cookiesFromBrowser?: string,
+): string[] {
+  const args = ['-J', '--skip-download', '--no-warnings'];
+  if (cookiesFromBrowser) {
+    args.push('--cookies-from-browser', cookiesFromBrowser);
+  }
+  args.push(...(flatPlaylist ? ['--flat-playlist'] : ['--no-playlist']), url);
+  return args;
+}
+
+async function runYtDlpInfoCommand(
+  url: string,
+  cwd: string,
+  signal: AbortSignal | undefined,
+  flatPlaylist: boolean,
+  cookiesFromBrowser?: string,
+) {
+  return runProcess('yt-dlp', buildYtDlpInfoArgs(url, flatPlaylist, cookiesFromBrowser), {
+    cwd,
+    signal,
+    timeoutMs: YTDLP_COMMAND_TIMEOUT_MS,
+  });
+}
+
 async function fetchYtDlpInfo(options: {
   url: string;
   cwd: string;
   signal?: AbortSignal;
   flatPlaylist: boolean;
-}): Promise<{ info?: YtDlpInfo; stdout: string; stderr: string; error?: string }> {
-  const processResult = await runProcess(
-    'yt-dlp',
-    [
-      '-J',
-      '--skip-download',
-      '--no-warnings',
-      ...(options.flatPlaylist ? ['--flat-playlist'] : ['--no-playlist']),
-      options.url,
-    ],
-    {
-      cwd: options.cwd,
-      signal: options.signal,
-      timeoutMs: YTDLP_COMMAND_TIMEOUT_MS,
-    },
+}): Promise<{
+  info?: YtDlpInfo;
+  stdout: string;
+  stderr: string;
+  error?: string;
+  usedCookies?: boolean;
+}> {
+  let processResult = await runYtDlpInfoCommand(
+    options.url,
+    options.cwd,
+    options.signal,
+    options.flatPlaylist,
   );
+  let usedCookies = false;
+
+  if (
+    processResult.exitCode !== 0 &&
+    !processResult.aborted &&
+    !processResult.timedOut &&
+    isBotDetectionError(processResult.stderr) &&
+    !options.signal?.aborted
+  ) {
+    processResult = await runYtDlpInfoCommand(
+      options.url,
+      options.cwd,
+      options.signal,
+      options.flatPlaylist,
+      'chrome',
+    );
+    usedCookies = true;
+  }
 
   if (processResult.aborted) {
     return {
@@ -592,6 +682,7 @@ async function fetchYtDlpInfo(options: {
     info: parseInfoJson(processResult.stdout),
     stdout: processResult.stdout,
     stderr: processResult.stderr,
+    usedCookies,
   };
 }
 
@@ -696,6 +787,7 @@ export async function runYtDlpFetch(options: ScraplingFetchOptions): Promise<Scr
       ...base,
       stdout: rootResult.stdout,
       stderr: rootResult.stderr,
+      usedCookies: rootResult.usedCookies,
     };
 
     if (rootResult.error || !rootResult.info) {
@@ -737,6 +829,7 @@ export async function runYtDlpFetch(options: ScraplingFetchOptions): Promise<Scr
         content,
         contentLength: content.length,
         errors: expanded.errors,
+        usedCookies: withProcessOutput.usedCookies,
       };
     }
 
@@ -752,6 +845,7 @@ export async function runYtDlpFetch(options: ScraplingFetchOptions): Promise<Scr
         content,
         contentLength: content.length,
         errors: [],
+        usedCookies: withProcessOutput.usedCookies,
       };
     }
 
@@ -771,6 +865,7 @@ export async function runYtDlpFetch(options: ScraplingFetchOptions): Promise<Scr
         signal: options.signal,
         source: source.source,
         language: source.language,
+        useCookies: rootResult.usedCookies,
       });
       transcript = transcriptResult.transcript;
       if (transcriptResult.error) {
@@ -789,6 +884,7 @@ export async function runYtDlpFetch(options: ScraplingFetchOptions): Promise<Scr
       content,
       contentLength: content.length,
       errors,
+      usedCookies: withProcessOutput.usedCookies,
     };
   } catch (error) {
     return failedYtDlpResult(base, error instanceof Error ? error.message : String(error));

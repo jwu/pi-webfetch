@@ -68,6 +68,7 @@ export interface WebFetchDetails {
   scraplingMode?: ExtractionMode;
   converter: 'scrapling' | 'defuddle' | 'gh' | 'yt-dlp';
   useDefuddle: boolean;
+  usedCookies?: boolean;
   phase?: WebFetchProgress['phase'] | 'converting' | 'judging' | 'done';
   currentStrategy?: string;
   message?: string;
@@ -153,7 +154,13 @@ function formatGitHubFailureHint(stderr: string | undefined): string {
   return 'GitHub URL matched. Make sure GitHub CLI is installed and authenticated via `gh auth status`.';
 }
 
-function formatYouTubeFailureHint(): string {
+function formatYouTubeFailureHint(stderr: string | undefined): string {
+  if (stderr && /sign in to confirm/i.test(stderr)) {
+    return 'YouTube URL matched, but YouTube requires browser cookies to verify you are not a bot. Make sure you are signed into YouTube in Chrome. If you use another browser, configure `webfetch.ytdlpCookiesFromBrowser` in pi settings.';
+  }
+  if (stderr && /chrome/i.test(stderr)) {
+    return 'YouTube URL matched. yt-dlp tried to use Chrome cookies but failed. Make sure Chrome is installed and you are signed into YouTube in Chrome, or configure `webfetch.ytdlpCookiesFromBrowser` in pi settings to another browser.';
+  }
   return 'YouTube URL matched. Make sure yt-dlp is installed and available in PATH.';
 }
 
@@ -167,7 +174,7 @@ function formatFailure(result: WebFetchResultLike): string {
     isGh
       ? formatGitHubFailureHint(stderr)
       : isYouTube
-        ? formatYouTubeFailureHint()
+        ? formatYouTubeFailureHint(stderr)
         : 'Fallback fetch uses Scrapling + Defuddle. Make sure Scrapling is available via `scrapling shell -L warning -c "print(\'ok\')"`.',
     '',
     'Errors:',
@@ -235,6 +242,7 @@ function formatRenderSummary(details: WebFetchDetails, theme: any): string {
   const pieces = [
     details.strategy,
     formatPipeline(details),
+    details.usedCookies ? 'cookies' : undefined,
     details.truncation?.truncated ? 'truncated' : undefined,
     formatFailedAttempts(details.errors.length),
   ].filter(Boolean);
@@ -761,6 +769,7 @@ export function createWebFetchTool(
           scraplingMode: detailScraplingMode,
           converter,
           useDefuddle,
+          usedCookies: result.usedCookies,
           contentLength: result.contentLength,
           fullOutputPath,
           truncation,

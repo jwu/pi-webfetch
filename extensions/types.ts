@@ -45,6 +45,7 @@ export interface WebFetchResult {
   errors: WebFetchError[];
   stdout?: string;
   stderr?: string;
+  usedCookies?: boolean;
 }
 
 export interface WebFetchOptions {

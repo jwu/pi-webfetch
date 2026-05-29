@@ -77,11 +77,29 @@ https://www.youtube.com/user/<name>
 
 频道根 URL 会尝试展开 Videos、Shorts、Streams 三类 section。
 
+## Cookies 递进重试
+
+`webfetch` 对 yt-dlp 命令采用递进式 cookies 策略：
+
+1. 先不带 cookies 执行 yt-dlp 命令
+2. 如果命令失败，且 stderr 中包含 `"Sign in to confirm you're not a bot"`（YouTube 反爬虫验证），自动重试并带上 `--cookies-from-browser chrome`
+3. 重试成功则继续后续流程，结果中会标记 `usedCookies: true`
+
+此策略适用于所有 yt-dlp 命令：元数据抓取（`-J`）、字幕下载。
+
+如果 cookies 重试也失败，会根据 stderr 内容给出不同的错误提示：
+
+| stderr | 提示 |
+|---|---|
+| 包含 `Sign in to confirm` | YouTube 要求 cookies 认证，请确保 Chrome 中已登录 YouTube |
+| 包含 `chrome`（cookie 重试失败） | Chrome cookies 提取失败，确认 Chrome 已安装并已登录 |
+| 其他 | yt-dlp 未安装或命令失败 |
+
 ## 单视频抓取流程
 
 ### 第一步：抓元数据
 
-执行：
+执行（失败时自动重试带 `--cookies-from-browser chrome`）：
 
 ```bash
 yt-dlp -J --skip-download --no-warnings --no-playlist <url>
@@ -180,7 +198,7 @@ yt-dlp --skip-download --no-warnings --no-playlist \
 
 播放列表和频道子页使用 flat playlist，不抓每个视频详情，不下载字幕。
 
-执行：
+执行（失败时自动重试带 `--cookies-from-browser chrome`）：
 
 ```bash
 yt-dlp -J --skip-download --no-warnings --flat-playlist <url>
@@ -210,7 +228,7 @@ yt-dlp -J --skip-download --no-warnings --flat-playlist <url>
 
 ## 频道根抓取流程
 
-频道根 URL 会先执行：
+频道根 URL 会先执行（失败时自动重试带 `--cookies-from-browser chrome`）：
 
 ```bash
 yt-dlp -J --skip-download --no-warnings --flat-playlist <channel-url>
@@ -223,7 +241,7 @@ Brandon Melville - Videos  -> https://www.youtube.com/@Brandon-Melville/videos
 Brandon Melville - Shorts  -> https://www.youtube.com/@Brandon-Melville/shorts
 ```
 
-然后 `webfetch` 会自动展开这些 section：
+然后 `webfetch` 会自动展开这些 section（每个 section 同样享受 cookies 递进重试）：
 
 ```bash
 yt-dlp -J --skip-download --no-warnings --flat-playlist <channel-url>/videos
@@ -422,11 +440,21 @@ YouTube URL matched. Make sure yt-dlp is installed and available in PATH.
 
 ### 命令失败
 
-如果 `yt-dlp` exit code 非 0，会返回：
+如果 `yt-dlp` exit code 非 0，`webfetch` 会先判断是否为 YouTube 反爬虫验证。
+
+如果是 bot 检测（stderr 包含 `"Sign in to confirm"`），自动重试并带上 `--cookies-from-browser chrome`。
+
+如果重试仍失败，或不是 bot 检测错误，会返回：
 
 ```text
 yt-dlp command exited with code <code>
 ```
+
+错误提示会根据 stderr 内容区分：
+
+- 包含 `Sign in to confirm`：提示用户确保 Chrome 中已登录 YouTube
+- 包含 `chrome`（cookies 重试也失败）：提示用户确认 Chrome 已安装且已登录
+- 其他：通用错误提示
 
 ### JSON 为空或非法
 
