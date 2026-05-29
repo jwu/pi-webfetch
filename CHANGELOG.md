@@ -1,3 +1,10 @@
+# [1.3.0](https://github.com/jwu/pi-webfetch/compare/v1.2.1...v1.3.0) (2026-05-29)
+
+
+### Features
+
+* **yt-dlp:** progressive cookie retry on bot detection ([fc991c3](https://github.com/jwu/pi-webfetch/commit/fc991c3d2eac9596da3805e0322b9177e964b956))
+
 ## [1.2.1](https://github.com/jwu/pi-webfetch/compare/v1.2.0...v1.2.1) (2026-05-22)
 
 
