@@ -1,5 +1,6 @@
 import type { Api, Model, ModelThinkingLevel, UserMessage } from '@earendil-works/pi-ai';
-import { clampThinkingLevel, complete } from '@earendil-works/pi-ai';
+import { clampThinkingLevel } from '@earendil-works/pi-ai';
+import { completeSimple } from '@earendil-works/pi-ai/compat';
 import type { ExtensionAPI, ModelRegistry } from '@earendil-works/pi-coding-agent';
 import {
   DEFAULT_MAX_BYTES,
@@ -361,7 +362,7 @@ async function runQualityJudge({
   try {
     const requestedThinking = settings.qualityJudgeThinkLevel ?? 'off';
     const clampedThinking = clampThinkingLevel(model, requestedThinking as ModelThinkingLevel);
-    const response = await complete(
+    const response = await completeSimple(
       model,
       { systemPrompt: QUALITY_JUDGE_SYSTEM_PROMPT, messages: [userMessage] },
       {
