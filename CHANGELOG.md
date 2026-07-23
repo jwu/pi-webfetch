@@ -1,3 +1,15 @@
+# [1.4.0](https://github.com/jwu/pi-webfetch/compare/v1.3.0...v1.4.0) (2026-07-23)
+
+
+### Bug Fixes
+
+* update pi ai compatibility API ([5620b19](https://github.com/jwu/pi-webfetch/commit/5620b192f1af18e776fda8355e4cfe6079d84e02))
+
+
+### Features
+
+* support direct image URL fetching ([f6aab99](https://github.com/jwu/pi-webfetch/commit/f6aab996063885790da9ae72086274c3c7b0a424))
+
 # [1.3.0](https://github.com/jwu/pi-webfetch/compare/v1.2.1...v1.3.0) (2026-05-29)
 
 
