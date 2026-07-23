@@ -4,4 +4,5 @@ export * from './sites.js';
 export * from './cli/scrapling.js';
 export * from './cli/defuddle.js';
 export * from './cli/gh.js';
+export * from './cli/image.js';
 export * from './cli/ytdlp.js';

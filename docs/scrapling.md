@@ -9,8 +9,9 @@
 - URL 协议是 `http://` 或 `https://`
 - 不是 GitHub / Gist URL
 - 不是 YouTube URL
+- HTTP 响应的 `Content-Type` 不是受支持的图片格式
 
-GitHub URL 会走 `gh`，YouTube URL 会走 `yt-dlp`。
+GitHub URL 会走 `gh`，YouTube URL 会走 `yt-dlp`。一般 URL 会先探测响应类型；`image/avif`、`image/gif`、`image/jpeg`、`image/png` 和 `image/webp` 会直接作为图片下载（上限 20 MiB），不会交给 Scrapling 抽取。
 
 ## 执行命令
 

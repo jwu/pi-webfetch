@@ -15,6 +15,7 @@ import { Type } from 'typebox';
 
 import { convertHtmlWithDefuddle } from './cli/defuddle.js';
 import { isGitHubUrl, runGhFetch } from './cli/gh.js';
+import { runImageFetch, type FetchedImage, type ImageFetchResult } from './cli/image.js';
 import { runScraplingFetch, strategiesForUrl } from './cli/scrapling.js';
 import { isYouTubeUrl, runYtDlpFetch } from './cli/ytdlp.js';
 import { normalizeMode, persistFullContent, readWebFetchSettings } from './shared.js';
@@ -67,13 +68,14 @@ export interface WebFetchDetails {
   strategyReason?: string;
   mode: ExtractionMode;
   scraplingMode?: ExtractionMode;
-  converter: 'scrapling' | 'defuddle' | 'gh' | 'yt-dlp';
+  converter: 'scrapling' | 'defuddle' | 'gh' | 'yt-dlp' | 'image';
   useDefuddle: boolean;
   usedCookies?: boolean;
   phase?: WebFetchProgress['phase'] | 'converting' | 'judging' | 'done';
   currentStrategy?: string;
   message?: string;
   contentLength?: number;
+  imageMimeType?: string;
   fullOutputPath?: string;
   truncation?: TruncationResult;
   errors: WebFetchErrorDetail[];
@@ -81,6 +83,10 @@ export interface WebFetchDetails {
 
 export type WebFetchRunner = (options: WebFetchOptionsLike) => Promise<WebFetchResultLike>;
 export type DefuddleConverter = (html: string, url: string) => Promise<string>;
+export type ImageFetcher = (options: {
+  url: string;
+  signal?: AbortSignal;
+}) => Promise<ImageFetchResult>;
 export type SettingsReader = (cwd: string) => WebFetchSettings;
 
 interface WebFetchExecutionContext {
@@ -116,6 +122,42 @@ function extensionForMode(mode: ExtractionMode): string {
 function formatErrors(errors: WebFetchErrorDetail[]): string {
   if (errors.length === 0) return 'No fetch error details were returned.';
   return errors.map((error) => `- ${error.strategy}: ${error.error}`).join('\n');
+}
+
+function textToolContent(text: string): [{ type: 'text'; text: string }] {
+  return [{ type: 'text', text }];
+}
+
+function imageToolContent(
+  text: string,
+  image: FetchedImage,
+): [{ type: 'text'; text: string }, { type: 'image'; data: string; mimeType: string }] {
+  return [
+    { type: 'text', text },
+    { type: 'image', data: image.data, mimeType: image.mimeType },
+  ];
+}
+
+function formatImageTooLarge(result: Exclude<ImageFetchResult, FetchedImage | undefined>): string {
+  const limit = formatSize(result.maxBytes);
+  const actual =
+    result.contentLength !== undefined ? `${formatSize(result.contentLength)} exceeds` : 'exceeds';
+  return `Image download rejected: ${actual} ${limit} limit (${result.mimeType}).`;
+}
+
+function formatImageSuccess(image: FetchedImage, mode: ExtractionMode): string {
+  return [
+    `URL: ${image.finalUrl}`,
+    `Status: ${image.status}`,
+    'Fetcher: fetch',
+    'Strategy: Response Content-Type matched a supported image format.',
+    `Mode: ${mode}`,
+    'Converter: image',
+    `Content-Type: ${image.mimeType}`,
+    `Content-Length: ${image.contentLength}`,
+    '',
+    'Image downloaded and provided as visual input.',
+  ].join('\n');
 }
 
 function formatSuccess(
@@ -206,6 +248,7 @@ function emitToolProgress(
 }
 
 function formatPipeline(details: WebFetchDetails): string {
+  if (details.converter === 'image') return 'image download';
   if (details.converter === 'gh') return `${details.mode} via gh`;
   if (details.converter === 'yt-dlp') return `${details.mode} via yt-dlp`;
   if (details.mode === 'markdown') {
@@ -226,7 +269,13 @@ function formatRenderSummary(details: WebFetchDetails, theme: any): string {
         ? theme.fg('warning', details.phase)
         : theme.fg('accent', details.phase);
     const cliName =
-      details.converter === 'gh' ? 'gh' : details.converter === 'yt-dlp' ? 'yt-dlp' : 'scrapling';
+      details.converter === 'gh'
+        ? 'gh'
+        : details.converter === 'yt-dlp'
+          ? 'yt-dlp'
+          : details.converter === 'image'
+            ? 'fetch'
+            : 'scrapling';
     const cli = theme.fg('customMessageLabel', cliName);
     const strategy =
       details.currentStrategy && details.currentStrategy !== cliName
@@ -390,7 +439,8 @@ function renderWebFetchResult(
   if (!details) return new Text(theme.fg('error', 'webfetch: missing details'), 0, 0);
 
   const summaryLines = [formatRenderSummary(details, theme)];
-  const output = result.content[0]?.type === 'text' ? (result.content[0].text ?? '') : '';
+  const textContent = result.content.find((content) => content.type === 'text');
+  const output = textContent?.text ?? '';
 
   if (options.isPartial) {
     if (details.errors.length > 0) {
@@ -419,11 +469,12 @@ function renderWebFetchResult(
         text += theme.fg('muted', `\n... (${remaining} more lines, ctrl+o to expand)`);
       }
     }
-
-    return new Text(text, 0, 0);
+  } else if (output) {
+    text += `\n\n${renderOutputLines(output, theme).join('\n')}`;
   }
 
-  if (output) text += `\n\n${renderOutputLines(output, theme).join('\n')}`;
+  // ToolExecutionComponent renders image content blocks after this card. Rendering one
+  // here too duplicates it and reserves an empty image-sized area inside the card.
   return new Text(text, 0, 0);
 }
 
@@ -617,18 +668,21 @@ export function createWebFetchTool(
   ghRunner: WebFetchRunner = runGhFetch,
   qualityJudge: QualityJudge = runQualityJudge,
   ytDlpRunner: WebFetchRunner = runYtDlpFetch,
+  imageFetcher: ImageFetcher = runImageFetch,
 ) {
   return {
     name: 'webfetch',
     label: 'Web Fetch',
     description:
-      'Inspect a user-provided HTTP(S) URL. GitHub URLs are fetched with gh, YouTube URLs with yt-dlp, and all other URLs fall back to Scrapling plus Defuddle for readable markdown.',
-    promptSnippet: 'Fetch and clean information from HTTP(S) URLs using gh, yt-dlp, or Scrapling.',
+      'Inspect a user-provided HTTP(S) URL. Direct image responses are returned as visual input; GitHub URLs use gh, YouTube URLs use yt-dlp, and other pages fall back to Scrapling plus Defuddle for readable markdown.',
+    promptSnippet:
+      'Fetch HTTP(S) URLs as images, GitHub data, YouTube data, or Scrapling-cleaned web content.',
     promptGuidelines: [
       'Use webfetch when the user provides a URL and asks to inspect, fetch, read, summarize, or analyze its content.',
       'webfetch routes github.com URLs through `gh`; if GitHub CLI is unavailable or unauthenticated, report the tool error and do not invent fetched content.',
       'webfetch routes YouTube URLs through `yt-dlp`; if yt-dlp is unavailable, report the tool error and do not invent fetched content.',
-      'For non-GitHub and non-YouTube URLs, webfetch falls back to Scrapling through `scrapling shell`; if Scrapling is unavailable, report the tool error and do not invent fetched content.',
+      'For general URLs whose HTTP response has a supported image Content-Type, webfetch downloads and returns the image as visual input (up to 20 MiB).',
+      'For non-GitHub, non-YouTube, non-image URLs, webfetch falls back to Scrapling through `scrapling shell`; if Scrapling is unavailable, report the tool error and do not invent fetched content.',
       'webfetch defaults to markdown extraction. Use mode="html" only when raw cleaned HTML is needed, mode="text" for plain text, and mode="json" for YouTube yt-dlp metadata.',
       'For fallback markdown, webfetch asks Scrapling for cleaned HTML and converts it to Markdown with Defuddle by default. Set { "webfetch": { "useDefuddle": false } } to skip Defuddle.',
       'If webfetch output is truncated and includes a Full output path, use the read tool on that path when complete content is needed.',
@@ -676,6 +730,46 @@ export function createWebFetchTool(
         message: 'starting webfetch',
         errors: [],
       });
+      if (selectedRunner === runScraplingFetch) {
+        const imageResult = await imageFetcher({ url: params.url, signal });
+        if (imageResult?.kind === 'too-large') {
+          return {
+            content: textToolContent(formatImageTooLarge(imageResult)),
+            details: {
+              url: imageResult.url,
+              finalUrl: imageResult.finalUrl,
+              status: imageResult.status,
+              mode,
+              converter: 'image',
+              useDefuddle: false,
+              contentLength: imageResult.contentLength,
+              imageMimeType: imageResult.mimeType,
+              phase: 'failed',
+              errors: [{ strategy: 'fetch', error: formatImageTooLarge(imageResult) }],
+            } as WebFetchDetails,
+          };
+        }
+        if (imageResult?.kind === 'image') {
+          return {
+            content: imageToolContent(formatImageSuccess(imageResult, mode), imageResult),
+            details: {
+              url: imageResult.url,
+              finalUrl: imageResult.finalUrl,
+              status: imageResult.status,
+              strategy: 'fetch',
+              strategyReason: 'Response Content-Type matched a supported image format.',
+              mode,
+              converter: 'image',
+              useDefuddle: false,
+              contentLength: imageResult.contentLength,
+              imageMimeType: imageResult.mimeType,
+              phase: 'done',
+              errors: [],
+            } as WebFetchDetails,
+          };
+        }
+      }
+
       let result: WebFetchResultLike;
 
       if (useDefuddle) {
@@ -714,7 +808,7 @@ export function createWebFetchTool(
 
       if (!result.ok || !result.content) {
         return {
-          content: [{ type: 'text' as const, text: formatFailure(result) }],
+          content: textToolContent(formatFailure(result)),
           details: {
             url: result.url,
             finalUrl: result.finalUrl,
@@ -749,17 +843,14 @@ export function createWebFetchTool(
       }
 
       return {
-        content: [
-          {
-            type: 'text' as const,
-            text: formatSuccess(result, content, {
-              converter,
-              useDefuddle,
-              scraplingMode: detailScraplingMode,
-              fullOutputPath,
-            }),
-          },
-        ],
+        content: textToolContent(
+          formatSuccess(result, content, {
+            converter,
+            useDefuddle,
+            scraplingMode: detailScraplingMode,
+            fullOutputPath,
+          }),
+        ),
         details: {
           url: result.url,
           finalUrl: result.finalUrl,

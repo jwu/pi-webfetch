@@ -4,6 +4,7 @@ A [pi](https://github.com/earendil-works/pi-mono) package that adds a `webfetch`
 
 `webfetch` is optimized for agent use:
 
+- Direct image responses are downloaded as visual input for image-capable models, with inline terminal preview where supported.
 - General web pages are cleaned into readable content.
 - GitHub URLs are fetched with `gh` for better repository, issue, PR, file, and directory results.
 - YouTube URLs are fetched with `yt-dlp` for video metadata, transcripts, playlists, and channel listings.
@@ -28,7 +29,8 @@ Install the optional CLI tools for the URL types you want to support:
 
 | URL type | Required executable | Notes |
 |---|---|---|
-| General web pages | `scrapling` | Used for non-GitHub, non-YouTube URLs |
+| Direct images | none | Detected by response `Content-Type`; JPEG, PNG, WebP, GIF, and AVIF up to 20 MiB |
+| General web pages | `scrapling` | Used for non-GitHub, non-YouTube, non-image URLs |
 | GitHub / Gist | `gh` | Must be installed and authenticated for private or rate-limited content |
 | YouTube | `yt-dlp` | Used for videos, transcripts, playlists, Shorts, and channels |
 
@@ -64,6 +66,10 @@ Examples:
 ```
 
 ## What you get
+
+### Direct images
+
+For a general URL whose HTTP response declares `image/avif`, `image/gif`, `image/jpeg`, `image/png`, or `image/webp`, `webfetch` downloads the image directly instead of sending binary data to Scrapling. It returns the image as a Pi image content block for visual analysis and, in terminals that support inline images, displays a preview. Downloads are limited to 20 MiB.
 
 ### General web pages
 

@@ -1,7 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import webfetchExtension, { createWebFetchTool, type WebFetchRunner } from '../extensions/index.ts';
+import webfetchExtension, {
+  createWebFetchTool,
+  type ImageFetcher,
+  type WebFetchRunner,
+} from '../extensions/index.ts';
+import { MAX_IMAGE_BYTES, runImageFetch } from '../extensions/cli/image.ts';
 
 function fakeRunner(content = '# Example\n\nFetched content'): WebFetchRunner {
   return async ({ url, mode, strategies }) => {
@@ -54,7 +59,125 @@ function markerTheme() {
   };
 }
 
+describe('image fetcher', () => {
+  it('returns supported images as base64 content', async () => {
+    const result = await runImageFetch({
+      url: 'https://example.com/asset',
+      fetchImpl: async () =>
+        new Response(new Uint8Array([0xff, 0xd8, 0xff]), {
+          status: 200,
+          headers: { 'content-type': 'image/jpeg' },
+        }),
+    });
+
+    assert.deepEqual(result, {
+      kind: 'image',
+      url: 'https://example.com/asset',
+      finalUrl: 'https://example.com/asset',
+      status: 200,
+      mimeType: 'image/jpeg',
+      data: Buffer.from([0xff, 0xd8, 0xff]).toString('base64'),
+      contentLength: 3,
+    });
+  });
+
+  it('does not treat non-image responses as images', async () => {
+    const result = await runImageFetch({
+      url: 'https://example.com/article',
+      fetchImpl: async () =>
+        new Response('<html></html>', {
+          status: 200,
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+        }),
+    });
+
+    assert.equal(result, undefined);
+  });
+
+  it('rejects images whose declared size exceeds the download limit', async () => {
+    const result = await runImageFetch({
+      url: 'https://example.com/large.jpg',
+      fetchImpl: async () =>
+        new Response(null, {
+          status: 200,
+          headers: {
+            'content-type': 'image/jpeg',
+            'content-length': String(MAX_IMAGE_BYTES + 1),
+          },
+        }),
+    });
+
+    assert.deepEqual(result, {
+      kind: 'too-large',
+      url: 'https://example.com/large.jpg',
+      finalUrl: 'https://example.com/large.jpg',
+      status: 200,
+      mimeType: 'image/jpeg',
+      contentLength: MAX_IMAGE_BYTES + 1,
+      maxBytes: MAX_IMAGE_BYTES,
+    });
+  });
+});
+
 describe('webfetch extension', () => {
+  it('returns direct image URLs as Pi image content without invoking Scrapling', async () => {
+    let imageFetcherCalled = false;
+    const imageFetcher: ImageFetcher = async () => {
+      imageFetcherCalled = true;
+      return {
+        kind: 'image',
+        url: 'https://example.com/image',
+        finalUrl: 'https://cdn.example.com/image.jpg',
+        status: 200,
+        mimeType: 'image/jpeg',
+        data: 'aW1hZ2U=',
+        contentLength: 5,
+      };
+    };
+
+    const tool = createWebFetchTool(
+      undefined,
+      () => ({}),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      imageFetcher,
+    );
+    const result = await tool.execute(
+      'call-image',
+      { url: 'https://example.com/image' },
+      undefined,
+      undefined,
+      { cwd: process.cwd() },
+    );
+
+    assert.equal(imageFetcherCalled, true);
+    assert.equal(result.content.length, 2);
+    assert.deepEqual(result.content[1], {
+      type: 'image',
+      data: 'aW1hZ2U=',
+      mimeType: 'image/jpeg',
+    });
+    assert.match(result.content[0].text, /Image downloaded and provided as visual input/);
+    const rendered = tool.renderResult(result, { expanded: false, isPartial: false }, mockTheme());
+    assert.ok(rendered.render(1000).length < 10, 'the tool card must not render a second image');
+    assert.deepEqual(result.details, {
+      url: 'https://example.com/image',
+      finalUrl: 'https://cdn.example.com/image.jpg',
+      status: 200,
+      strategy: 'fetch',
+      strategyReason: 'Response Content-Type matched a supported image format.',
+      mode: 'markdown',
+      converter: 'image',
+      useDefuddle: false,
+      contentLength: 5,
+      imageMimeType: 'image/jpeg',
+      phase: 'done',
+      errors: [],
+    });
+  });
+
   it('registers the webfetch tool and marks failed webfetch results as errors', () => {
     const tools: Array<ReturnType<typeof createWebFetchTool>> = [];
     const toolResultHandlers: Array<(event: { toolName: string; details?: unknown }) => unknown> =
