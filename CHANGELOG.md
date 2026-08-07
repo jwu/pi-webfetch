@@ -1,3 +1,15 @@
+# [2.0.0](https://github.com/jwu/pi-webfetch/compare/v1.4.0...v2.0.0) (2026-08-07)
+
+
+* feat!: target pi 0.84 runtime ([ce5ac3b](https://github.com/jwu/pi-webfetch/commit/ce5ac3b2f16a1e9a1bc132f9f3e8d40a541a171b))
+
+
+### BREAKING CHANGES
+
+* require pi 0.84.x and Node.js 22.19 or newer.
+
+Remove support for dotted webfetch setting keys.
+
 # [1.4.0](https://github.com/jwu/pi-webfetch/compare/v1.3.0...v1.4.0) (2026-07-23)
 
 
