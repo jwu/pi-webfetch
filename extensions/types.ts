@@ -22,7 +22,14 @@ export interface WebFetchProgress {
   errors?: WebFetchError[];
 }
 
-export type QualityJudgeThinkLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+export type QualityJudgeThinkLevel =
+  | 'off'
+  | 'minimal'
+  | 'low'
+  | 'medium'
+  | 'high'
+  | 'xhigh'
+  | 'max';
 
 export interface WebFetchSettings {
   useDefuddle?: boolean;

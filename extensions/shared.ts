@@ -1,10 +1,14 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { withFileMutationQueue } from '@earendil-works/pi-coding-agent';
+import {
+  CONFIG_DIR_NAME,
+  getAgentDir,
+  withFileMutationQueue,
+} from '@earendil-works/pi-coding-agent';
 
 import {
   DEFAULT_MODE,
@@ -36,17 +40,14 @@ function readSettingsFile(path: string): Record<string, unknown> {
 }
 
 function getGlobalSettingsPath(): string {
-  return join(process.env.HOME ?? homedir(), '.pi', 'agent', 'settings.json');
+  return join(getAgentDir(), 'settings.json');
 }
 
 function getProjectSettingsPath(cwd: string): string {
-  return join(cwd, '.pi', 'settings.json');
+  return join(cwd, CONFIG_DIR_NAME, 'settings.json');
 }
 
 function readWebfetchValue(settings: Record<string, unknown>, key: string): unknown {
-  const dotted = settings[`webfetch.${key}`];
-  if (dotted !== undefined) return dotted;
-
   const webfetch = settings.webfetch;
   if (webfetch && typeof webfetch === 'object' && !Array.isArray(webfetch)) {
     return (webfetch as Record<string, unknown>)[key];
@@ -72,6 +73,7 @@ const QUALITY_JUDGE_THINK_LEVELS = new Set<string>([
   'medium',
   'high',
   'xhigh',
+  'max',
 ]);
 
 function readQualityJudgeThinkLevel(
@@ -96,10 +98,15 @@ function extractWebFetchSettings(settings: Record<string, unknown>): WebFetchSet
   return extracted;
 }
 
-export function readWebFetchSettings(cwd: string): WebFetchSettings {
+export function readWebFetchSettings(
+  cwd: string,
+  includeProjectSettings: boolean,
+): WebFetchSettings {
   return {
     ...extractWebFetchSettings(readSettingsFile(getGlobalSettingsPath())),
-    ...extractWebFetchSettings(readSettingsFile(getProjectSettingsPath(cwd))),
+    ...(includeProjectSettings
+      ? extractWebFetchSettings(readSettingsFile(getProjectSettingsPath(cwd)))
+      : {}),
   };
 }
 

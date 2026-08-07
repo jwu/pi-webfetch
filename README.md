@@ -25,6 +25,9 @@ Or via local path in `~/.pi/agent/settings.json` while developing:
 
 ## Requirements
 
+- pi `0.84.x`
+- Node.js `>=22.19.0`
+
 Install the optional CLI tools for the URL types you want to support:
 
 | URL type | Required executable | Notes |
@@ -124,16 +127,7 @@ Add `webfetch` settings to `.pi/settings.json` (project) or `~/.pi/agent/setting
 }
 ```
 
-Project settings override global settings. The dotted key form also works:
-
-```json
-{
-  "webfetch.useDefuddle": true,
-  "webfetch.qualityJudge": true,
-  "webfetch.qualityJudgeModel": "google/gemini-2.5-flash",
-  "webfetch.qualityJudgeThinkLevel": "off"
-}
-```
+Project settings override global settings after the project has been trusted by pi.
 
 ### Settings
 
@@ -142,7 +136,7 @@ Project settings override global settings. The dotted key form also works:
 | `webfetch.useDefuddle` | `true` | Use Defuddle to convert cleaned HTML to Markdown for general web pages. Set `false` to use Scrapling Markdown directly. |
 | `webfetch.qualityJudge` | `false` | Ask a model to reject unusable fetched Markdown, such as boilerplate, captcha/challenge pages, or unrelated content. |
 | `webfetch.qualityJudgeModel` | current pi model | Optional judge model in `provider/model` form. |
-| `webfetch.qualityJudgeThinkLevel` | `off` | Optional judge thinking level: `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. |
+| `webfetch.qualityJudgeThinkLevel` | `off` | Optional judge thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`. |
 
 ## Output behavior
 

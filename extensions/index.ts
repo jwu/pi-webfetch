@@ -1,6 +1,5 @@
-import type { Api, Model, ModelThinkingLevel, UserMessage } from '@earendil-works/pi-ai';
-import { clampThinkingLevel } from '@earendil-works/pi-ai';
-import { completeSimple } from '@earendil-works/pi-ai/compat';
+import type { Api, Model, ModelThinkingLevel, Usage, UserMessage } from '@earendil-works/pi-ai';
+import { clampThinkingLevel, StringEnum } from '@earendil-works/pi-ai';
 import type { ExtensionAPI, ModelRegistry } from '@earendil-works/pi-coding-agent';
 import {
   DEFAULT_MAX_BYTES,
@@ -32,14 +31,7 @@ const WebFetchParams = Type.Object({
   url: Type.String({
     description: 'HTTP or HTTPS URL to inspect and fetch.',
   }),
-  mode: Type.Optional(
-    Type.Union([
-      Type.Literal('markdown'),
-      Type.Literal('html'),
-      Type.Literal('text'),
-      Type.Literal('json'),
-    ]),
-  ),
+  mode: Type.Optional(StringEnum(['markdown', 'html', 'text', 'json'] as const)),
 });
 
 export interface WebFetchInput {
@@ -55,6 +47,7 @@ type WebFetchProgressUpdate = Omit<WebFetchProgress, 'strategy' | 'errors'> & {
 type WebFetchResultLike = Omit<ScraplingFetchResult, 'strategy' | 'errors'> & {
   strategy?: string;
   errors: WebFetchErrorDetail[];
+  usage?: Usage;
 };
 type WebFetchOptionsLike = Omit<ScraplingFetchOptions, 'onProgress'> & {
   onProgress?: (progress: WebFetchProgressUpdate) => void;
@@ -87,12 +80,13 @@ export type ImageFetcher = (options: {
   url: string;
   signal?: AbortSignal;
 }) => Promise<ImageFetchResult>;
-export type SettingsReader = (cwd: string) => WebFetchSettings;
+export type SettingsReader = (cwd: string, includeProjectSettings: boolean) => WebFetchSettings;
 
 interface WebFetchExecutionContext {
   cwd: string;
   model?: Model<Api>;
   modelRegistry?: ModelRegistry;
+  isProjectTrusted(): boolean;
 }
 
 interface QualityJudgeInput {
@@ -103,6 +97,7 @@ interface QualityJudgeInput {
   settings: WebFetchSettings;
   ctx: WebFetchExecutionContext;
   signal?: AbortSignal;
+  onUsage?: (usage: Usage) => void;
 }
 
 interface QualityJudgeDecision {
@@ -370,6 +365,147 @@ function parseQualityJudgeDecision(raw: string): QualityJudgeDecision | undefine
   }
 }
 
+function mergeUsage(current: Usage | undefined, next: Usage): Usage {
+  if (!current) return next;
+
+  const reasoning =
+    current.reasoning !== undefined || next.reasoning !== undefined
+      ? (current.reasoning ?? 0) + (next.reasoning ?? 0)
+      : undefined;
+  const cacheWrite1h =
+    current.cacheWrite1h !== undefined || next.cacheWrite1h !== undefined
+      ? (current.cacheWrite1h ?? 0) + (next.cacheWrite1h ?? 0)
+      : undefined;
+
+  return {
+    input: current.input + next.input,
+    output: current.output + next.output,
+    cacheRead: current.cacheRead + next.cacheRead,
+    cacheWrite: current.cacheWrite + next.cacheWrite,
+    ...(cacheWrite1h !== undefined ? { cacheWrite1h } : {}),
+    ...(reasoning !== undefined ? { reasoning } : {}),
+    totalTokens: current.totalTokens + next.totalTokens,
+    cost: {
+      input: current.cost.input + next.cost.input,
+      output: current.cost.output + next.cost.output,
+      cacheRead: current.cost.cacheRead + next.cost.cacheRead,
+      cacheWrite: current.cost.cacheWrite + next.cost.cacheWrite,
+      total: current.cost.total + next.cost.total,
+    },
+  };
+}
+
+function normalizedThinkingLevel(
+  level: Exclude<ModelThinkingLevel, 'off'>,
+): 'minimal' | 'low' | 'medium' | 'high' {
+  return level === 'xhigh' || level === 'max' ? 'high' : level;
+}
+
+function googleThinkingOptions(
+  model: Model<Api>,
+  level: Exclude<ModelThinkingLevel, 'off'>,
+): Record<string, unknown> {
+  const effort = normalizedThinkingLevel(level);
+  const modelId = model.id.toLowerCase();
+  const isGemini3Pro = /gemini-3(?:\.\d+)?-pro/.test(modelId);
+  const isGemini3Flash =
+    /gemini-3(?:\.\d+)?-flash/.test(modelId) ||
+    modelId === 'gemini-flash-latest' ||
+    modelId === 'gemini-flash-lite-latest';
+  const isGemma4 = /gemma-?4/.test(modelId);
+
+  if (isGemini3Pro || isGemini3Flash || isGemma4) {
+    const levelMap = {
+      minimal: 'MINIMAL',
+      low: 'LOW',
+      medium: 'MEDIUM',
+      high: 'HIGH',
+    } as const;
+    const googleLevel =
+      isGemini3Pro && (effort === 'minimal' || effort === 'low')
+        ? 'LOW'
+        : isGemini3Pro
+          ? 'HIGH'
+          : isGemma4 && (effort === 'minimal' || effort === 'low')
+            ? 'MINIMAL'
+            : isGemma4
+              ? 'HIGH'
+              : levelMap[effort];
+    return { thinking: { enabled: true, level: googleLevel } };
+  }
+
+  const defaultBudgets = {
+    minimal: modelId.includes('2.5-flash-lite') ? 512 : 128,
+    low: 2048,
+    medium: 8192,
+    high: modelId.includes('2.5-pro') ? 32768 : 24576,
+  };
+  return { thinking: { enabled: true, budgetTokens: defaultBudgets[effort] ?? -1 } };
+}
+
+function anthropicThinkingOptions(
+  model: Model<Api>,
+  level: Exclude<ModelThinkingLevel, 'off'>,
+): Record<string, unknown> {
+  if (
+    model.compat &&
+    'forceAdaptiveThinking' in model.compat &&
+    model.compat.forceAdaptiveThinking === true
+  ) {
+    const mapped = model.thinkingLevelMap?.[level];
+    const effort =
+      typeof mapped === 'string'
+        ? mapped
+        : level === 'minimal' || level === 'low'
+          ? 'low'
+          : level === 'medium'
+            ? 'medium'
+            : 'high';
+    return { thinkingEnabled: true, effort };
+  }
+
+  const budgets = { minimal: 1024, low: 2048, medium: 8192, high: 16384 };
+  const thinkingBudgetTokens = budgets[normalizedThinkingLevel(level)];
+  const maxTokens = Math.min(model.maxTokens, thinkingBudgetTokens + 200);
+  return {
+    thinkingEnabled: true,
+    thinkingBudgetTokens: Math.min(thinkingBudgetTokens, Math.max(0, maxTokens - 1024)),
+    maxTokens,
+  };
+}
+
+function qualityJudgeThinkingOptions(
+  model: Model<Api>,
+  level: ModelThinkingLevel,
+): Record<string, unknown> {
+  if (level === 'off') {
+    if (model.api === 'anthropic-messages') return { thinkingEnabled: false };
+    if (model.api === 'google-generative-ai' || model.api === 'google-vertex') {
+      return { thinking: { enabled: false } };
+    }
+    return {};
+  }
+
+  switch (model.api) {
+    case 'anthropic-messages':
+      return anthropicThinkingOptions(model, level);
+    case 'google-generative-ai':
+    case 'google-vertex':
+      return googleThinkingOptions(model, level);
+    case 'mistral-conversations':
+      return model.id === 'mistral-small-2603' ||
+        model.id === 'mistral-small-latest' ||
+        model.id === 'mistral-medium-3.5'
+        ? { reasoningEffort: model.thinkingLevelMap?.[level] ?? 'high' }
+        : { promptMode: 'reasoning' };
+    case 'bedrock-converse-stream':
+    case 'pi-messages':
+      return { reasoning: level };
+    default:
+      return { reasoningEffort: level };
+  }
+}
+
 async function runQualityJudge({
   url,
   finalUrl,
@@ -378,15 +514,13 @@ async function runQualityJudge({
   settings,
   ctx,
   signal,
+  onUsage,
 }: QualityJudgeInput): Promise<QualityJudgeDecision | undefined> {
   if (!settings.qualityJudge) return undefined;
   if (!ctx.modelRegistry) return undefined;
 
   const model = resolveQualityJudgeModel(settings, ctx);
   if (!model) return undefined;
-
-  const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-  if (!auth.ok || !auth.apiKey) return undefined;
 
   const userMessage: UserMessage = {
     role: 'user',
@@ -411,18 +545,18 @@ async function runQualityJudge({
   try {
     const requestedThinking = settings.qualityJudgeThinkLevel ?? 'off';
     const clampedThinking = clampThinkingLevel(model, requestedThinking as ModelThinkingLevel);
-    const response = await completeSimple(
+    const response = await ctx.modelRegistry.complete(
       model,
       { systemPrompt: QUALITY_JUDGE_SYSTEM_PROMPT, messages: [userMessage] },
       {
-        apiKey: auth.apiKey,
-        headers: auth.headers,
         signal,
         maxTokens: 200,
-        ...(clampedThinking !== 'off' ? { reasoning: clampedThinking } : {}),
+        cacheRetention: 'none',
+        ...qualityJudgeThinkingOptions(model, clampedThinking),
       },
     );
 
+    onUsage?.(response.usage);
     if (response.stopReason === 'aborted') return undefined;
     return parseQualityJudgeDecision(extractTextContent(response));
   } catch {
@@ -490,6 +624,7 @@ async function runWithDefuddlePerStrategy(options: {
 }): Promise<WebFetchResultLike> {
   const strategies = strategiesForUrl(options.params.url);
   const accumulatedErrors: WebFetchErrorDetail[] = [];
+  let accumulatedUsage: Usage | undefined;
   let lastResult: WebFetchResultLike | undefined;
 
   for (const strategy of strategies) {
@@ -570,6 +705,9 @@ async function runWithDefuddlePerStrategy(options: {
             settings: options.settings,
             ctx: options.ctx,
             signal: options.signal,
+            onUsage: (usage) => {
+              accumulatedUsage = mergeUsage(accumulatedUsage, usage);
+            },
           })
           .catch(() => undefined);
 
@@ -614,6 +752,7 @@ async function runWithDefuddlePerStrategy(options: {
         content,
         contentLength: content.length,
         errors: [...accumulatedErrors, ...result.errors],
+        usage: accumulatedUsage,
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -658,6 +797,7 @@ async function runWithDefuddlePerStrategy(options: {
     mode: 'markdown',
     content: undefined,
     errors: accumulatedErrors,
+    usage: accumulatedUsage,
   };
 }
 
@@ -705,7 +845,7 @@ export function createWebFetchTool(
           : runner === runScraplingFetch && isYouTubeUrl(params.url)
             ? ytDlpRunner
             : runner;
-      const settings = settingsReader(ctx.cwd);
+      const settings = settingsReader(ctx.cwd, ctx.isProjectTrusted());
       const useDefuddle =
         selectedRunner !== ghRunner &&
         selectedRunner !== ytDlpRunner &&
@@ -824,7 +964,7 @@ export function createWebFetchTool(
             ...(result.strategy ? { currentStrategy: result.strategy } : {}),
             errors: result.errors,
           } as WebFetchDetails,
-          isError: true as const,
+          ...(result.usage ? { usage: result.usage } : {}),
         };
       }
 
@@ -868,6 +1008,7 @@ export function createWebFetchTool(
           phase: 'done',
           errors: result.errors,
         } as WebFetchDetails,
+        ...(result.usage ? { usage: result.usage } : {}),
       };
     },
 

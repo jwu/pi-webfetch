@@ -37,6 +37,13 @@ function failingRunner(): WebFetchRunner {
   });
 }
 
+function webFetchContext(projectTrusted = false) {
+  return {
+    cwd: process.cwd(),
+    isProjectTrusted: () => projectTrusted,
+  };
+}
+
 function mockTheme() {
   return {
     fg(_color: string, text: string) {
@@ -149,7 +156,7 @@ describe('webfetch extension', () => {
       { url: 'https://example.com/image' },
       undefined,
       undefined,
-      { cwd: process.cwd() },
+      webFetchContext(),
     );
 
     assert.equal(imageFetcherCalled, true);
@@ -253,7 +260,7 @@ describe('webfetch extension', () => {
       { url: 'https://github.com/jwu/pi-webfetch' },
       undefined,
       undefined,
-      { cwd: process.cwd() },
+      webFetchContext(),
     );
 
     assert.equal(ghCalled, true);
@@ -295,7 +302,7 @@ describe('webfetch extension', () => {
       { url: 'https://github.com/jwu/pi-webfetch' },
       undefined,
       undefined,
-      { cwd: process.cwd() },
+      webFetchContext(),
     );
 
     const rendered = tool.renderResult(result, { expanded: false, isPartial: false }, mockTheme());
@@ -304,7 +311,7 @@ describe('webfetch extension', () => {
       .map((line) => line.trimEnd())
       .join('\n');
 
-    assert.equal(result.isError, true);
+    assert.equal('isError' in result, false);
     assert.match(result.content[0].text, /GitHub CLI/);
     assert.doesNotMatch(result.content[0].text, /Scrapling \+ Defuddle/);
     assert.match(text, /^└─ failed: gh view repo/m);
@@ -328,10 +335,10 @@ describe('webfetch extension', () => {
       { url: 'https://github.com/0x676e67/wreq/blob/main/CHANGELOG.md' },
       undefined,
       undefined,
-      { cwd: process.cwd() },
+      webFetchContext(),
     );
 
-    assert.equal(result.isError, true);
+    assert.equal('isError' in result, false);
     assert.match(result.content[0].text, /owner\/repo, branch\/ref, and path exist/);
     assert.doesNotMatch(result.content[0].text, /gh auth status/);
   });
@@ -375,7 +382,7 @@ describe('webfetch extension', () => {
       { url: 'https://www.youtube.com/watch?v=abc123', mode: 'json' },
       undefined,
       undefined,
-      { cwd: process.cwd() },
+      webFetchContext(),
     );
 
     assert.equal(ytDlpCalled, true);
@@ -424,10 +431,10 @@ describe('webfetch extension', () => {
       { url: 'https://youtu.be/abc123' },
       undefined,
       undefined,
-      { cwd: process.cwd() },
+      webFetchContext(),
     );
 
-    assert.equal(result.isError, true);
+    assert.equal('isError' in result, false);
     assert.match(result.content[0].text, /yt-dlp is installed/);
     assert.match(result.content[0].text, /spawn yt-dlp ENOENT/);
     assert.doesNotMatch(result.content[0].text, /Scrapling \+ Defuddle/);
@@ -440,10 +447,10 @@ describe('webfetch extension', () => {
       { url: 'https://example.com', mode: 'json' },
       undefined,
       undefined,
-      { cwd: process.cwd() },
+      webFetchContext(),
     );
 
-    assert.equal(result.isError, true);
+    assert.equal('isError' in result, false);
     assert.match(result.content[0].text, /json mode is only supported by yt-dlp routes/);
   });
 
@@ -454,7 +461,7 @@ describe('webfetch extension', () => {
       { url: 'https://example.com', mode: 'markdown' },
       undefined,
       undefined,
-      { cwd: process.cwd() },
+      webFetchContext(),
     );
 
     assert.equal(result.content[0].type, 'text');
@@ -515,7 +522,7 @@ describe('webfetch extension', () => {
       { url: 'https://example.com', mode: 'markdown' },
       undefined,
       undefined,
-      { cwd: process.cwd() },
+      webFetchContext(),
     );
 
     assert.equal(runnerMode, 'html');
@@ -576,7 +583,7 @@ describe('webfetch extension', () => {
       { url: 'https://example.com', mode: 'html' },
       undefined,
       undefined,
-      { cwd: process.cwd() },
+      webFetchContext(),
     );
 
     assert.equal(runnerMode, 'html');
@@ -619,7 +626,7 @@ describe('webfetch extension', () => {
       { url: 'https://example.com' },
       undefined,
       undefined,
-      { cwd: process.cwd() },
+      webFetchContext(),
     );
 
     assert.deepEqual(calls, ['fetcher', 'dynamic']);
@@ -682,7 +689,7 @@ describe('webfetch extension', () => {
       { url: 'https://example.com' },
       undefined,
       undefined,
-      { cwd: process.cwd() },
+      webFetchContext(),
     );
 
     assert.deepEqual(calls, ['fetcher', 'dynamic']);
@@ -691,6 +698,159 @@ describe('webfetch extension', () => {
     assert.deepEqual((result.details as { errors: unknown }).errors, [
       { strategy: 'fetcher', error: 'quality-judge: footer only' },
     ]);
+  });
+
+  it('uses the 0.84 model runtime for quality judging and reports nested usage', async () => {
+    const usage = {
+      input: 12,
+      output: 4,
+      cacheRead: 2,
+      cacheWrite: 1,
+      totalTokens: 19,
+      cost: {
+        input: 0.01,
+        output: 0.02,
+        cacheRead: 0.001,
+        cacheWrite: 0.002,
+        total: 0.033,
+      },
+    };
+    const model = {
+      id: 'judge-model',
+      provider: 'test-provider',
+      api: 'openai-responses',
+      reasoning: true,
+    };
+    let includeProjectSettings: boolean | undefined;
+    let completeCalls = 0;
+    const modelRegistry = {
+      async complete(selectedModel: unknown, context: unknown, options: unknown) {
+        completeCalls += 1;
+        assert.equal(selectedModel, model);
+        assert.match(JSON.stringify(context), /Fetched Markdown sample/);
+        assert.deepEqual(options, {
+          signal: undefined,
+          maxTokens: 200,
+          cacheRetention: 'none',
+          reasoningEffort: 'high',
+        });
+        return {
+          role: 'assistant',
+          content: [{ type: 'text', text: '{"usable":true,"reason":"article content"}' }],
+          api: 'openai-responses',
+          provider: 'test-provider',
+          model: 'judge-model',
+          usage,
+          stopReason: 'stop',
+          timestamp: Date.now(),
+        };
+      },
+    };
+
+    const tool = createWebFetchTool(
+      fakeRunner('<article>Useful content</article>'),
+      (_cwd, includeProject) => {
+        includeProjectSettings = includeProject;
+        return {
+          useDefuddle: true,
+          qualityJudge: true,
+          qualityJudgeThinkLevel: 'high',
+        };
+      },
+      async () => '# Useful content',
+    );
+
+    const result = await tool.execute(
+      'call-quality-judge',
+      { url: 'https://example.com' },
+      undefined,
+      undefined,
+      {
+        cwd: process.cwd(),
+        model: model as never,
+        modelRegistry: modelRegistry as never,
+        isProjectTrusted: () => true,
+      },
+    );
+
+    assert.equal(includeProjectSettings, true);
+    assert.equal(completeCalls, 1);
+    assert.ok('usage' in result);
+    assert.deepEqual(result.usage, usage);
+    assert.match(result.content[0].text, /# Useful content/);
+  });
+
+  it('maps quality judge thinking options to provider-native 0.84 fields', async () => {
+    const usage = {
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 2,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    };
+    const calls: Array<{ model: { api: string }; options: Record<string, unknown> }> = [];
+    const modelRegistry = {
+      async complete(model: { api: string }, _context: unknown, options: Record<string, unknown>) {
+        calls.push({ model, options });
+        return {
+          content: [{ type: 'text', text: '{"usable":true,"reason":"usable"}' }],
+          usage,
+          stopReason: 'stop',
+        };
+      },
+    };
+
+    for (const { model, thinkLevel } of [
+      {
+        model: {
+          id: 'gemini-3-flash',
+          provider: 'google',
+          api: 'google-generative-ai',
+          reasoning: true,
+        },
+        thinkLevel: 'medium',
+      },
+      {
+        model: {
+          id: 'claude-sonnet',
+          provider: 'anthropic',
+          api: 'anthropic-messages',
+          reasoning: true,
+        },
+        thinkLevel: 'off',
+      },
+    ] as const) {
+      const tool = createWebFetchTool(
+        fakeRunner('<article>Useful content</article>'),
+        () => ({ useDefuddle: true, qualityJudge: true, qualityJudgeThinkLevel: thinkLevel }),
+        async () => '# Useful content',
+      );
+      await tool.execute(
+        'call-quality-judge',
+        { url: 'https://example.com' },
+        undefined,
+        undefined,
+        {
+          ...webFetchContext(),
+          model: model as never,
+          modelRegistry: modelRegistry as never,
+        },
+      );
+    }
+
+    assert.deepEqual(calls[0]?.options, {
+      signal: undefined,
+      maxTokens: 200,
+      cacheRetention: 'none',
+      thinking: { enabled: true, level: 'MEDIUM' },
+    });
+    assert.deepEqual(calls[1]?.options, {
+      signal: undefined,
+      maxTokens: 200,
+      cacheRetention: 'none',
+      thinkingEnabled: false,
+    });
   });
 
   it('returns an error result when Defuddle conversion fails for every strategy', async () => {
@@ -707,10 +867,10 @@ describe('webfetch extension', () => {
       { url: 'https://example.com' },
       undefined,
       undefined,
-      { cwd: process.cwd() },
+      webFetchContext(),
     );
 
-    assert.equal(result.isError, true);
+    assert.equal('isError' in result, false);
     assert.match(result.content[0].text, /Web fetch failed/);
     assert.match(result.content[0].text, /defuddle exploded/);
     assert.deepEqual(result.details, {
@@ -764,7 +924,7 @@ describe('webfetch extension', () => {
       { url: 'https://example.com' },
       undefined,
       (update: unknown) => updates.push(update),
-      { cwd: process.cwd() },
+      webFetchContext(),
     );
 
     assert.ok(updates.length >= 3);
@@ -812,7 +972,7 @@ describe('webfetch extension', () => {
       { url: 'https://example.com' },
       undefined,
       undefined,
-      { cwd: process.cwd() },
+      webFetchContext(),
     );
 
     const collapsed = tool.renderResult(result, { expanded: false, isPartial: false }, theme);
@@ -838,7 +998,7 @@ describe('webfetch extension', () => {
       { url: 'https://example.com' },
       undefined,
       undefined,
-      { cwd: process.cwd() },
+      webFetchContext(),
     );
 
     const collapsed = tool.renderResult(result, { expanded: false, isPartial: false }, theme);
@@ -870,10 +1030,10 @@ describe('webfetch extension', () => {
       { url: 'https://example.com' },
       undefined,
       undefined,
-      { cwd: process.cwd() },
+      webFetchContext(),
     );
 
-    assert.equal(result.isError, true);
+    assert.equal('isError' in result, false);
     assert.match(result.content[0].text, /Web fetch failed/);
     assert.match(result.content[0].text, /HTTP status 403/);
     assert.deepEqual(result.details, {

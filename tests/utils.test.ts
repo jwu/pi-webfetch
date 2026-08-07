@@ -53,20 +53,25 @@ describe('normalizeMode', () => {
 
 describe('readWebFetchSettings', () => {
   let originalHome: string | undefined;
+  let originalAgentDir: string | undefined;
   let home: string | undefined;
   let cwd: string | undefined;
 
   beforeEach(() => {
     originalHome = process.env.HOME;
+    originalAgentDir = process.env.PI_CODING_AGENT_DIR;
     home = mkdtempSync('pi-webfetch-home-');
     cwd = mkdtempSync('pi-webfetch-cwd-');
     process.env.HOME = home;
-    mkdirSync(join(home, '.pi', 'agent'), { recursive: true });
+    process.env.PI_CODING_AGENT_DIR = join(home, '.pi', 'agent');
+    mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
   });
 
   afterEach(() => {
     if (originalHome === undefined) delete process.env.HOME;
     else process.env.HOME = originalHome;
+    if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
 
     if (home) rmSync(home, { recursive: true, force: true });
     if (cwd) rmSync(cwd, { recursive: true, force: true });
@@ -82,7 +87,7 @@ describe('readWebFetchSettings', () => {
   }
 
   it('defaults useDefuddle to the built-in fallback behavior', () => {
-    assert.deepEqual(readWebFetchSettings(cwd!), {});
+    assert.deepEqual(readWebFetchSettings(cwd!, false), {});
   });
 
   it('reads nested global webfetch settings', () => {
@@ -94,7 +99,7 @@ describe('readWebFetchSettings', () => {
         qualityJudgeThinkLevel: 'minimal',
       },
     });
-    assert.deepEqual(readWebFetchSettings(cwd!), {
+    assert.deepEqual(readWebFetchSettings(cwd!, false), {
       useDefuddle: true,
       qualityJudge: true,
       qualityJudgeModel: 'google/gemini-2.5-flash',
@@ -102,9 +107,9 @@ describe('readWebFetchSettings', () => {
     });
   });
 
-  it('reads dotted webfetch.useDefuddle for compatibility', () => {
+  it('does not support dotted setting keys', () => {
     writeGlobalSettings({ 'webfetch.useDefuddle': true });
-    assert.deepEqual(readWebFetchSettings(cwd!), { useDefuddle: true });
+    assert.deepEqual(readWebFetchSettings(cwd!, false), {});
   });
 
   it('lets project settings override global settings', () => {
@@ -123,12 +128,19 @@ describe('readWebFetchSettings', () => {
         qualityJudgeThinkLevel: 'off',
       },
     });
-    assert.deepEqual(readWebFetchSettings(cwd!), {
+    assert.deepEqual(readWebFetchSettings(cwd!, true), {
       useDefuddle: false,
       qualityJudge: true,
       qualityJudgeModel: 'anthropic/claude-sonnet-4-5',
       qualityJudgeThinkLevel: 'off',
     });
+  });
+
+  it('ignores project settings when the project is not trusted', () => {
+    writeGlobalSettings({ webfetch: { useDefuddle: true } });
+    writeProjectSettings({ webfetch: { useDefuddle: false, qualityJudge: true } });
+
+    assert.deepEqual(readWebFetchSettings(cwd!, false), { useDefuddle: true });
   });
 
   it('ignores invalid values', () => {
@@ -140,7 +152,7 @@ describe('readWebFetchSettings', () => {
         qualityJudgeThinkLevel: 'extreme',
       },
     });
-    assert.deepEqual(readWebFetchSettings(cwd!), {});
+    assert.deepEqual(readWebFetchSettings(cwd!, false), {});
   });
 });
 
