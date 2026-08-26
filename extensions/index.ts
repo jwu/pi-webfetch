@@ -16,7 +16,7 @@ import { convertHtmlWithDefuddle } from './cli/defuddle.js';
 import { isGitHubUrl, runGhFetch } from './cli/gh.js';
 import { runImageFetch, type FetchedImage, type ImageFetchResult } from './cli/image.js';
 import { runScraplingFetch, strategiesForUrl } from './cli/scrapling.js';
-import { isYouTubeUrl, runYtDlpFetch } from './cli/ytdlp.js';
+import { isBilibiliUrl, isYouTubeUrl, runYtDlpFetch } from './cli/ytdlp.js';
 import { normalizeMode, persistFullContent, readWebFetchSettings } from './shared.js';
 import {
   DEFAULT_MODE,
@@ -192,27 +192,28 @@ function formatGitHubFailureHint(stderr: string | undefined): string {
   return 'GitHub URL matched. Make sure GitHub CLI is installed and authenticated via `gh auth status`.';
 }
 
-function formatYouTubeFailureHint(stderr: string | undefined): string {
-  if (stderr && /sign in to confirm/i.test(stderr)) {
-    return 'YouTube URL matched, but YouTube requires browser cookies to verify you are not a bot. Make sure you are signed into YouTube in Chrome. If you use another browser, configure `webfetch.ytdlpCookiesFromBrowser` in pi settings.';
+function formatYtDlpFailureHint(url: string, stderr: string | undefined): string {
+  const site = isBilibiliUrl(url) ? 'Bilibili' : 'YouTube';
+  if (stderr && /sign in to confirm|only available when logged in/i.test(stderr)) {
+    return `${site} URL matched, but it requires browser cookies. Sign in to ${site} in Chrome and retry.`;
   }
-  if (stderr && /chrome/i.test(stderr)) {
-    return 'YouTube URL matched. yt-dlp tried to use Chrome cookies but failed. Make sure Chrome is installed and you are signed into YouTube in Chrome, or configure `webfetch.ytdlpCookiesFromBrowser` in pi settings to another browser.';
+  if (stderr && /cookies-from-browser|keychain|chrome/i.test(stderr)) {
+    return `${site} URL matched. Check Chrome's cookie-access permissions and sign-in state.`;
   }
-  return 'YouTube URL matched. Make sure yt-dlp is installed and available in PATH.';
+  return `${site} URL matched. Make sure yt-dlp is installed and available in PATH.`;
 }
 
 function formatFailure(result: WebFetchResultLike): string {
   const stderr = result.stderr?.trim();
   const isGh = isGitHubUrl(result.url);
-  const isYouTube = isYouTubeUrl(result.url);
+  const isYtDlp = isYouTubeUrl(result.url) || isBilibiliUrl(result.url);
   const hint = [
     'Web fetch failed.',
     '',
     isGh
       ? formatGitHubFailureHint(stderr)
-      : isYouTube
-        ? formatYouTubeFailureHint(stderr)
+      : isYtDlp
+        ? formatYtDlpFailureHint(result.url, stderr)
         : 'Fallback fetch uses Scrapling + Defuddle. Make sure Scrapling is available via `scrapling shell -L warning -c "print(\'ok\')"`.',
     '',
     'Errors:',
@@ -814,17 +815,18 @@ export function createWebFetchTool(
     name: 'webfetch',
     label: 'Web Fetch',
     description:
-      'Inspect a user-provided HTTP(S) URL. Direct image responses are returned as visual input; GitHub URLs use gh, YouTube URLs use yt-dlp, and other pages fall back to Scrapling plus Defuddle for readable markdown.',
+      'Inspect a user-provided HTTP(S) URL. Direct image responses are returned as visual input; GitHub URLs use gh; YouTube and Bilibili video URLs use yt-dlp; other pages fall back to Scrapling plus Defuddle for readable markdown.',
     promptSnippet:
-      'Fetch HTTP(S) URLs as images, GitHub data, YouTube data, or Scrapling-cleaned web content.',
+      'Fetch HTTP(S) URLs as images, GitHub data, video metadata/transcripts, or Scrapling-cleaned web content.',
     promptGuidelines: [
       'Use webfetch when the user provides a URL and asks to inspect, fetch, read, summarize, or analyze its content.',
       'webfetch routes github.com URLs through `gh`; if GitHub CLI is unavailable or unauthenticated, report the tool error and do not invent fetched content.',
-      'webfetch routes YouTube URLs through `yt-dlp`; if yt-dlp is unavailable, report the tool error and do not invent fetched content.',
+      'webfetch routes YouTube and Bilibili video URLs through `yt-dlp`; if yt-dlp is unavailable, report the tool error and do not invent fetched content.',
       'For general URLs whose HTTP response has a supported image Content-Type, webfetch downloads and returns the image as visual input (up to 20 MiB).',
-      'For non-GitHub, non-YouTube, non-image URLs, webfetch falls back to Scrapling through `scrapling shell`; if Scrapling is unavailable, report the tool error and do not invent fetched content.',
-      'webfetch defaults to markdown extraction. Use mode="html" only when raw cleaned HTML is needed, mode="text" for plain text, and mode="json" for YouTube yt-dlp metadata.',
+      'For non-GitHub, non-video, non-image URLs, webfetch falls back to Scrapling through `scrapling shell`; if Scrapling is unavailable, report the tool error and do not invent fetched content.',
+      'webfetch defaults to markdown extraction. Use mode="html" only when raw cleaned HTML is needed, mode="text" for plain text, and mode="json" for yt-dlp video metadata.',
       'For fallback markdown, webfetch asks Scrapling for cleaned HTML and converts it to Markdown with Defuddle by default. Set { "webfetch": { "useDefuddle": false } } to skip Defuddle.',
+      'When Bilibili metadata has no CC subtitles, webfetch retries subtitle extraction with Chrome cookies.',
       'If webfetch output is truncated and includes a Full output path, use the read tool on that path when complete content is needed.',
       'Evaluate fetched content quality before relying on it; if it looks like boilerplate, a captcha/challenge page, or unrelated content, tell the user instead of treating it as authoritative.',
       'Optional setting { "webfetch": { "qualityJudge": true, "qualityJudgeModel": "provider/model", "qualityJudgeThinkLevel": "off" } } asks an LLM to reject unusable content before trying the next Scrapling strategy.',
@@ -842,7 +844,7 @@ export function createWebFetchTool(
       const selectedRunner =
         runner === runScraplingFetch && isGitHubUrl(params.url)
           ? ghRunner
-          : runner === runScraplingFetch && isYouTubeUrl(params.url)
+          : runner === runScraplingFetch && (isYouTubeUrl(params.url) || isBilibiliUrl(params.url))
             ? ytDlpRunner
             : runner;
       const settings = settingsReader(ctx.cwd, ctx.isProjectTrusted());

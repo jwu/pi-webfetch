@@ -9,11 +9,12 @@ import {
   DEFAULT_STRATEGIES,
   SITE_STRATEGY_MAPPINGS,
   ghRouteForUrl,
+  isBilibiliUrl,
   isGitHubUrl,
   isYouTubeUrl,
   normalizeMode,
   normalizeUrl,
-  parseVttTranscript,
+  parseSubtitleTranscript,
   readWebFetchSettings,
   runYtDlpFetch,
   siteStrategyMappingForUrl,
@@ -192,11 +193,25 @@ describe('YouTube routing', () => {
   });
 
   it('cleans VTT subtitles into transcript text', () => {
-    const transcript = parseVttTranscript(
+    const transcript = parseSubtitleTranscript(
       `WEBVTT\nKind: captions\nLanguage: en\n\n00:00:00.000 --> 00:00:01.000\n<c>Hello &amp; welcome</c>\n\n00:00:01.000 --> 00:00:02.000\nHello &amp; welcome\n\n00:00:02.000 --> 00:00:03.000\nWorld`,
     );
 
     assert.equal(transcript, 'Hello & welcome\nWorld');
+  });
+
+  it('detects Bilibili video URLs and short links', () => {
+    assert.equal(isBilibiliUrl('https://www.bilibili.com/video/BV1JiYezaEGE/'), true);
+    assert.equal(isBilibiliUrl('https://b23.tv/abc123'), true);
+    assert.equal(isBilibiliUrl('https://www.bilibili.com/read/cv123'), false);
+    assert.equal(isBilibiliUrl('https://example.com/video/BV1JiYezaEGE'), false);
+  });
+
+  it('cleans SRT subtitles into transcript text', () => {
+    const transcript = parseSubtitleTranscript(
+      '1\n00:00:00,000 --> 00:00:01,000\n第一句\n\n2\n00:00:01,000 --> 00:00:02,000\n第二句',
+    );
+    assert.equal(transcript, '第一句\n第二句');
   });
 });
 
@@ -329,6 +344,43 @@ VTT
     assert.match(result.content ?? '', /Channel: Example channel/);
     assert.match(result.content ?? '', /Hello & welcome\nWorld/);
     assert.deepEqual(result.errors, []);
+  });
+
+  it('retries Bilibili subtitle extraction with Chrome cookies', async () => {
+    const videoInfo = {
+      id: 'BV1JiYezaEGE',
+      title: 'Example Bilibili video',
+      webpage_url: 'https://www.bilibili.com/video/BV1JiYezaEGE/',
+    };
+    installFakeYtDlpScript(`#!/bin/sh
+if echo " $* " | grep -q -- ' -J '; then
+  printf '%s\\n' ${JSON.stringify(JSON.stringify(videoInfo))}
+  exit 0
+fi
+if ! echo " $* " | grep -q -- ' --cookies-from-browser chrome '; then
+  echo 'subtitle retry did not use Chrome cookies' >&2
+  exit 8
+fi
+output_dir=""
+previous=""
+for arg in "$@"; do
+  if [ "$previous" = "--paths" ]; then output_dir="$arg"; fi
+  previous="$arg"
+done
+mkdir -p "$output_dir"
+printf '1\\n00:00:00,000 --> 00:00:01,000\\n字幕重试\\n' > "$output_dir/BV1JiYezaEGE.ai-zh.srt"
+`);
+
+    const result = await runYtDlpFetch({
+      url: 'https://www.bilibili.com/video/BV1JiYezaEGE/',
+      mode: 'json',
+      cwd: process.cwd(),
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.usedCookies, true);
+    const parsed = JSON.parse(result.content ?? '{}') as { transcript?: { text: string } };
+    assert.equal(parsed.transcript?.text, '字幕重试');
   });
 
   it('returns flat playlist data as curated JSON', async () => {

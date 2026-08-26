@@ -7,7 +7,7 @@ A [pi](https://github.com/earendil-works/pi-mono) package that adds a `webfetch`
 - Direct image responses are downloaded as visual input for image-capable models, with inline terminal preview where supported.
 - General web pages are cleaned into readable content.
 - GitHub URLs are fetched with `gh` for better repository, issue, PR, file, and directory results.
-- YouTube URLs are fetched with `yt-dlp` for video metadata, transcripts, playlists, and channel listings.
+- YouTube and Bilibili video URLs are fetched with `yt-dlp` for video metadata and transcripts.
 
 ## Install
 
@@ -33,9 +33,9 @@ Install the optional CLI tools for the URL types you want to support:
 | URL type | Required executable | Notes |
 |---|---|---|
 | Direct images | none | Detected by response `Content-Type`; JPEG, PNG, WebP, GIF, and AVIF up to 20 MiB |
-| General web pages | `scrapling` | Used for non-GitHub, non-YouTube, non-image URLs |
+| General web pages | `scrapling` | Used for non-GitHub, non-video, non-image URLs |
 | GitHub / Gist | `gh` | Must be installed and authenticated for private or rate-limited content |
-| YouTube | `yt-dlp` | Used for videos, transcripts, playlists, Shorts, and channels |
+| YouTube / Bilibili videos | `yt-dlp` | Used for video metadata and transcripts; YouTube playlists and channels are also supported |
 
 Defuddle is bundled as an npm dependency and is used by default to improve Markdown output for general web pages.
 
@@ -68,6 +68,10 @@ Examples:
 { "url": "https://www.youtube.com/@Brandon-Melville", "mode": "json" }
 ```
 
+```json
+{ "url": "https://www.bilibili.com/video/BV1JiYezaEGE/" }
+```
+
 ## What you get
 
 ### Direct images
@@ -92,19 +96,19 @@ GitHub URLs are routed through `gh`, so common GitHub pages return useful CLI/AP
 - files and directories
 - commits and other API-backed paths
 
-### YouTube URLs
+### Video URLs: YouTube and Bilibili
 
-YouTube URLs are routed through `yt-dlp`.
+YouTube and supported Bilibili video URLs are routed through `yt-dlp`.
 
 Supported inputs include:
 
-- video URLs
-- `youtu.be` short links
-- playlists
-- channel handles, for example `https://www.youtube.com/@name`
-- channel Videos / Shorts / Streams tabs
+- YouTube video URLs and `youtu.be` short links
+- Bilibili `/video/...` URLs and `b23.tv` short links
+- YouTube playlists
+- YouTube channel handles, for example `https://www.youtube.com/@name`
+- YouTube channel Videos / Shorts / Streams tabs
 
-For videos, `webfetch` returns metadata and tries to include a transcript. Missing transcripts do not fail the request.
+For videos, `webfetch` returns metadata and tries to include a transcript. Missing transcripts do not fail the request. For Bilibili, when public metadata has no CC subtitles, `webfetch` retries subtitle extraction with Chrome cookies. Danmaku is not treated as a transcript.
 
 For playlists, `webfetch` returns a flat list of entries.
 

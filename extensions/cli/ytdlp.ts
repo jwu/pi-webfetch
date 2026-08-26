@@ -1,6 +1,6 @@
 import { readdir, readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { extname, join } from 'node:path';
+import { basename, extname, join } from 'node:path';
 
 import { normalizeMode, normalizeUrl, runProcess } from '../shared.js';
 import type { ExtractionMode, ScraplingFetchOptions, ScraplingFetchResult } from '../types.js';
@@ -49,8 +49,10 @@ interface TranscriptResult {
   text: string;
 }
 
+type VideoPlatform = 'youtube' | 'bilibili';
+
 interface CuratedVideo {
-  type: 'youtube_video';
+  type: 'youtube_video' | 'bilibili_video';
   url: string;
   id?: string;
   title?: string;
@@ -118,6 +120,18 @@ export function isYouTubeUrl(rawUrl: string): boolean {
   }
 }
 
+/** Bilibili video pages and b23.tv short links supported by yt-dlp. */
+export function isBilibiliUrl(rawUrl: string): boolean {
+  try {
+    const hostname = hostnameOf(normalizeUrl(rawUrl));
+    if (hostname === 'b23.tv') return true;
+    if (hostname !== 'bilibili.com') return false;
+    return new URL(normalizeUrl(rawUrl)).pathname.startsWith('/video/');
+  } catch {
+    return false;
+  }
+}
+
 function isLikelyPlaylistUrl(url: string): boolean {
   const parsed = new URL(url);
   if (parsed.searchParams.get('list')) return true;
@@ -174,9 +188,13 @@ function formatDuration(seconds: number | undefined): string | undefined {
     : `${minutes}:${secs.toString().padStart(2, '0')}`;
 }
 
-function canonicalVideoUrl(info: YtDlpInfo, fallbackUrl: string): string {
+function canonicalVideoUrl(info: YtDlpInfo, fallbackUrl: string, platform: VideoPlatform): string {
   if (info.webpage_url) return info.webpage_url;
-  if (info.id) return `https://www.youtube.com/watch?v=${info.id}`;
+  if (info.id) {
+    return platform === 'bilibili'
+      ? `https://www.bilibili.com/video/${info.id}`
+      : `https://www.youtube.com/watch?v=${info.id}`;
+  }
   return fallbackUrl;
 }
 
@@ -202,11 +220,13 @@ function curatedChapters(info: YtDlpInfo): CuratedVideo['chapters'] | undefined 
 function curatedVideo(
   info: YtDlpInfo,
   fallbackUrl: string,
+  platform: VideoPlatform,
   transcript?: TranscriptResult,
 ): CuratedVideo {
+  const type: CuratedVideo['type'] = platform === 'bilibili' ? 'bilibili_video' : 'youtube_video';
   return compactObject({
-    type: 'youtube_video' as const,
-    url: canonicalVideoUrl(info, fallbackUrl),
+    type,
+    url: canonicalVideoUrl(info, fallbackUrl, platform),
     id: info.id,
     title: info.title,
     channel: info.channel ?? info.uploader,
@@ -278,7 +298,7 @@ function formatChapters(chapters: CuratedVideo['chapters']): string | undefined 
 
 function formatVideoMarkdown(video: CuratedVideo): string {
   const lines = [
-    `# ${video.title ?? 'YouTube video'}`,
+    `# ${video.title ?? 'Video'}`,
     '',
     `URL: ${video.url}`,
     video.channel ? `Channel: ${video.channel}` : undefined,
@@ -367,11 +387,7 @@ function decodeHtmlEntities(text: string): string {
     );
 }
 
-function isBotDetectionError(stderr: string): boolean {
-  return /sign in to confirm/i.test(stderr);
-}
-
-export function parseVttTranscript(vtt: string): string {
+export function parseSubtitleTranscript(vtt: string): string {
   const transcriptLines: string[] = [];
   let previous = '';
   let skippingBlock = false;
@@ -430,7 +446,7 @@ function pickSubtitleLanguage(
   nativeLanguage: string | undefined,
 ): string | undefined {
   const languages = Object.keys(subtitles ?? {}).filter(
-    (language) => (subtitles ?? {})[language]?.length,
+    (language) => language !== 'danmaku' && (subtitles ?? {})[language]?.length,
   );
   if (languages.length === 0) return undefined;
 
@@ -454,13 +470,13 @@ function chooseTranscriptSource(
   return undefined;
 }
 
-async function findVttFiles(directory: string): Promise<string[]> {
+async function findSubtitleFiles(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   const files = await Promise.all(
     entries.map(async (entry) => {
       const path = join(directory, entry.name);
-      if (entry.isDirectory()) return findVttFiles(path);
-      return extname(entry.name).toLowerCase() === '.vtt' ? [path] : [];
+      if (entry.isDirectory()) return findSubtitleFiles(path);
+      return ['.srt', '.vtt'].includes(extname(entry.name).toLowerCase()) ? [path] : [];
     }),
   );
   return files.flat();
@@ -469,7 +485,7 @@ async function findVttFiles(directory: string): Promise<string[]> {
 function buildTranscriptArgs(options: {
   url: string;
   source: TranscriptResult['source'];
-  language: string;
+  language?: string;
   tempDir: string;
   cookiesFromBrowser?: string;
 }): string[] {
@@ -480,9 +496,9 @@ function buildTranscriptArgs(options: {
   args.push(
     options.source === 'manual' ? '--write-subs' : '--write-auto-subs',
     '--sub-langs',
-    options.language,
+    options.language ?? 'all',
     '--sub-format',
-    'vtt',
+    'vtt/srt/best',
     '--paths',
     options.tempDir,
     '-o',
@@ -497,19 +513,25 @@ async function downloadTranscript(options: {
   cwd: string;
   signal?: AbortSignal;
   source: TranscriptResult['source'];
-  language: string;
-  useCookies?: boolean;
-}): Promise<{ transcript?: TranscriptResult; error?: string; stdout?: string; stderr?: string }> {
+  language?: string;
+  cookiesFromBrowser?: string;
+}): Promise<{
+  transcript?: TranscriptResult;
+  unavailable?: boolean;
+  error?: string;
+  stdout?: string;
+  stderr?: string;
+}> {
   const tempDir = await mkdtemp(join(tmpdir(), 'pi-webfetch-ytdlp-'));
   try {
-    let processResult = await runProcess(
+    const processResult = await runProcess(
       'yt-dlp',
       buildTranscriptArgs({
         url: options.url,
         source: options.source,
         language: options.language,
         tempDir,
-        cookiesFromBrowser: options.useCookies ? 'chrome' : undefined,
+        cookiesFromBrowser: options.cookiesFromBrowser,
       }),
       {
         cwd: options.cwd,
@@ -517,31 +539,6 @@ async function downloadTranscript(options: {
         timeoutMs: YTDLP_COMMAND_TIMEOUT_MS,
       },
     );
-
-    if (
-      processResult.exitCode !== 0 &&
-      !processResult.aborted &&
-      !processResult.timedOut &&
-      isBotDetectionError(processResult.stderr) &&
-      !options.useCookies &&
-      !options.signal?.aborted
-    ) {
-      processResult = await runProcess(
-        'yt-dlp',
-        buildTranscriptArgs({
-          url: options.url,
-          source: options.source,
-          language: options.language,
-          tempDir,
-          cookiesFromBrowser: 'chrome',
-        }),
-        {
-          cwd: options.cwd,
-          signal: options.signal,
-          timeoutMs: YTDLP_COMMAND_TIMEOUT_MS,
-        },
-      );
-    }
 
     if (processResult.aborted) return { error: 'yt-dlp subtitle command aborted' };
     if (processResult.timedOut) {
@@ -555,16 +552,19 @@ async function downloadTranscript(options: {
       };
     }
 
-    const [subtitlePath] = await findVttFiles(tempDir);
-    if (!subtitlePath) return { error: 'yt-dlp did not write a VTT subtitle file' };
+    const [subtitlePath] = await findSubtitleFiles(tempDir);
+    if (!subtitlePath) return { unavailable: true };
 
-    const text = parseVttTranscript(await readFile(subtitlePath, 'utf8'));
-    if (!text) return { error: 'subtitle file did not contain transcript text' };
+    const text = parseSubtitleTranscript(await readFile(subtitlePath, 'utf8'));
+    if (!text) return { unavailable: true };
 
+    const filenameParts = basename(subtitlePath).split('.');
+    const language =
+      filenameParts.length >= 3 ? (filenameParts.at(-2) ?? options.language) : options.language;
     return {
       transcript: {
         source: options.source,
-        language: options.language,
+        language: language ?? 'unknown',
         text,
       },
       stdout: processResult.stdout,
@@ -585,15 +585,8 @@ function parseInfoJson(raw: string): YtDlpInfo {
   return parsed as YtDlpInfo;
 }
 
-function buildYtDlpInfoArgs(
-  url: string,
-  flatPlaylist: boolean,
-  cookiesFromBrowser?: string,
-): string[] {
+function buildYtDlpInfoArgs(url: string, flatPlaylist: boolean): string[] {
   const args = ['-J', '--skip-download', '--no-warnings'];
-  if (cookiesFromBrowser) {
-    args.push('--cookies-from-browser', cookiesFromBrowser);
-  }
   args.push(...(flatPlaylist ? ['--flat-playlist'] : ['--no-playlist']), url);
   return args;
 }
@@ -603,9 +596,8 @@ async function runYtDlpInfoCommand(
   cwd: string,
   signal: AbortSignal | undefined,
   flatPlaylist: boolean,
-  cookiesFromBrowser?: string,
 ) {
-  return runProcess('yt-dlp', buildYtDlpInfoArgs(url, flatPlaylist, cookiesFromBrowser), {
+  return runProcess('yt-dlp', buildYtDlpInfoArgs(url, flatPlaylist), {
     cwd,
     signal,
     timeoutMs: YTDLP_COMMAND_TIMEOUT_MS,
@@ -624,30 +616,13 @@ async function fetchYtDlpInfo(options: {
   error?: string;
   usedCookies?: boolean;
 }> {
-  let processResult = await runYtDlpInfoCommand(
+  const processResult = await runYtDlpInfoCommand(
     options.url,
     options.cwd,
     options.signal,
     options.flatPlaylist,
   );
-  let usedCookies = false;
-
-  if (
-    processResult.exitCode !== 0 &&
-    !processResult.aborted &&
-    !processResult.timedOut &&
-    isBotDetectionError(processResult.stderr) &&
-    !options.signal?.aborted
-  ) {
-    processResult = await runYtDlpInfoCommand(
-      options.url,
-      options.cwd,
-      options.signal,
-      options.flatPlaylist,
-      'chrome',
-    );
-    usedCookies = true;
-  }
+  const usedCookies = false;
 
   if (processResult.aborted) {
     return {
@@ -751,8 +726,10 @@ async function expandChannelSections(options: {
 export async function runYtDlpFetch(options: ScraplingFetchOptions): Promise<ScraplingFetchResult> {
   const url = normalizeUrl(options.url);
   const mode = ytdlpResultMode(normalizeMode(options.mode));
-  const playlist = isLikelyPlaylistUrl(url);
-  const channelRoot = isChannelRootUrl(url);
+  const platform: VideoPlatform = isBilibiliUrl(url) ? 'bilibili' : 'youtube';
+  const playlist = platform === 'youtube' && isLikelyPlaylistUrl(url);
+  const channelRoot = platform === 'youtube' && isChannelRootUrl(url);
+  const siteName = platform === 'bilibili' ? 'Bilibili' : 'YouTube';
   const base = {
     url,
     finalUrl: url,
@@ -761,7 +738,7 @@ export async function runYtDlpFetch(options: ScraplingFetchOptions): Promise<Scr
       ? 'YouTube channel URL matched; expand channel videos and shorts with yt-dlp flat playlists.'
       : playlist
         ? 'YouTube playlist/channel URL matched; fetch a flat playlist with yt-dlp.'
-        : 'YouTube video URL matched; fetch metadata and transcript with yt-dlp.',
+        : `${siteName} video URL matched; fetch metadata and transcript with yt-dlp.`,
     mode,
   };
 
@@ -850,14 +827,20 @@ export async function runYtDlpFetch(options: ScraplingFetchOptions): Promise<Scr
     }
 
     const errors: ScraplingFetchResult['errors'] = [];
-    const source = chooseTranscriptSource(info);
+    const source: { source: TranscriptResult['source']; language?: string } | undefined =
+      platform === 'bilibili' ? { source: 'manual' } : chooseTranscriptSource(info);
+    // Bilibili only exposes CC subtitle metadata to signed-in users. Keep the initial
+    // metadata request unauthenticated, then retry subtitle extraction with Chrome cookies.
+    const subtitleCookiesFromBrowser = platform === 'bilibili' ? 'chrome' : undefined;
     let transcript: TranscriptResult | undefined;
+    let usedCookies = rootResult.usedCookies;
 
     if (source) {
+      const language = source.language ?? 'all';
       options.onProgress?.({
         phase: 'extracting',
         strategy: 'yt-dlp',
-        message: `downloading ${source.source} subtitles (${source.language}) with yt-dlp`,
+        message: `downloading ${source.source} subtitles (${language}) with yt-dlp`,
       });
       const transcriptResult = await downloadTranscript({
         url,
@@ -865,15 +848,16 @@ export async function runYtDlpFetch(options: ScraplingFetchOptions): Promise<Scr
         signal: options.signal,
         source: source.source,
         language: source.language,
-        useCookies: rootResult.usedCookies,
+        cookiesFromBrowser: subtitleCookiesFromBrowser,
       });
       transcript = transcriptResult.transcript;
+      usedCookies ||= Boolean(subtitleCookiesFromBrowser);
       if (transcriptResult.error) {
         errors.push({ strategy: 'yt-dlp', error: `transcript: ${transcriptResult.error}` });
       }
     }
 
-    const curated = curatedVideo(info, url, transcript);
+    const curated = curatedVideo(info, url, platform, transcript);
     const content =
       mode === 'json' ? JSON.stringify(curated, null, 2) : formatVideoMarkdown(curated);
     options.onProgress?.({ phase: 'success', strategy: 'yt-dlp', message: 'yt-dlp succeeded' });
@@ -884,7 +868,7 @@ export async function runYtDlpFetch(options: ScraplingFetchOptions): Promise<Scr
       content,
       contentLength: content.length,
       errors,
-      usedCookies: withProcessOutput.usedCookies,
+      usedCookies,
     };
   } catch (error) {
     return failedYtDlpResult(base, error instanceof Error ? error.message : String(error));

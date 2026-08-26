@@ -408,6 +408,40 @@ describe('webfetch extension', () => {
     });
   });
 
+  it('routes Bilibili video URLs to yt-dlp', async () => {
+    const ytDlpRunner: WebFetchRunner = async ({ url, mode }) => {
+      return {
+        ok: true,
+        url,
+        finalUrl: url,
+        strategy: 'yt-dlp',
+        strategyReason: 'Bilibili video URL matched; fetch metadata and transcript with yt-dlp.',
+        mode: mode ?? 'markdown',
+        content: JSON.stringify({ type: 'bilibili_video', id: 'BV1JiYezaEGE' }),
+        contentLength: 55,
+        errors: [],
+      };
+    };
+
+    const tool = createWebFetchTool(
+      undefined,
+      () => ({}),
+      undefined,
+      undefined,
+      undefined,
+      ytDlpRunner,
+    );
+    const result = await tool.execute(
+      'call-bili',
+      { url: 'https://www.bilibili.com/video/BV1JiYezaEGE/', mode: 'json' },
+      undefined,
+      undefined,
+      webFetchContext(),
+    );
+
+    assert.match(result.content[0].text, /"type":"bilibili_video"/);
+  });
+
   it('renders YouTube dependency failures with a yt-dlp install hint', async () => {
     const ytDlpRunner: WebFetchRunner = async ({ url, mode }) => ({
       ok: false,
