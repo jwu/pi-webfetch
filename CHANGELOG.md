@@ -1,3 +1,10 @@
+# [2.1.0](https://github.com/jwu/pi-webfetch/compare/v2.0.0...v2.1.0) (2026-08-26)
+
+
+### Features
+
+* support Bilibili video subtitles ([189a7b9](https://github.com/jwu/pi-webfetch/commit/189a7b9d6f4cbb5e61ed9fffa85f67fbabd55344))
+
 # [2.0.0](https://github.com/jwu/pi-webfetch/compare/v1.4.0...v2.0.0) (2026-08-07)
 
 
