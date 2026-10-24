@@ -663,8 +663,8 @@ describe('webfetch extension', () => {
       webFetchContext(),
     );
 
-    assert.deepEqual(calls, ['fetcher', 'dynamic']);
-    assert.match(result.content[0].text, /Fetcher: dynamic/);
+    assert.deepEqual(calls, ['fetcher', 'stealthy']);
+    assert.match(result.content[0].text, /Fetcher: stealthy/);
     assert.match(result.content[0].text, /# Dynamic content/);
     const details = result.details as unknown as Record<string, unknown>;
     assert.equal((details.truncation as { truncated: boolean }).truncated, false);
@@ -673,7 +673,7 @@ describe('webfetch extension', () => {
       url: 'https://example.com',
       finalUrl: 'https://example.com',
       status: 200,
-      strategy: 'dynamic',
+      strategy: 'stealthy',
       strategyReason: 'test strategy reason',
       mode: 'markdown',
       scraplingMode: 'html',
@@ -726,8 +726,8 @@ describe('webfetch extension', () => {
       webFetchContext(),
     );
 
-    assert.deepEqual(calls, ['fetcher', 'dynamic']);
-    assert.match(result.content[0].text, /Fetcher: dynamic/);
+    assert.deepEqual(calls, ['fetcher', 'stealthy']);
+    assert.match(result.content[0].text, /Fetcher: stealthy/);
     assert.match(result.content[0].text, /# Useful dynamic content/);
     assert.deepEqual((result.details as { errors: unknown }).errors, [
       { strategy: 'fetcher', error: 'quality-judge: footer only' },
@@ -922,7 +922,6 @@ describe('webfetch extension', () => {
       currentStrategy: 'stealthy',
       errors: [
         { strategy: 'fetcher', error: 'defuddle: defuddle exploded' },
-        { strategy: 'dynamic', error: 'defuddle: defuddle exploded' },
         { strategy: 'stealthy', error: 'defuddle: defuddle exploded' },
       ],
     });
@@ -943,7 +942,7 @@ describe('webfetch extension', () => {
         url,
         finalUrl: url,
         status: 200,
-        strategy: 'dynamic',
+        strategy: 'stealthy',
         strategyReason: 'test strategy reason',
         mode: mode ?? 'markdown',
         content: 'content',

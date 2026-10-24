@@ -14,10 +14,10 @@ import type {
 } from '../types.js';
 
 export const SCRAPLING_COMMAND_TIMEOUT_MS = 180_000;
-export const DEFAULT_STRATEGIES: FetchStrategy[] = ['fetcher', 'dynamic', 'stealthy'];
+export const DEFAULT_STRATEGIES: FetchStrategy[] = ['fetcher', 'stealthy'];
 
 const DEFAULT_STRATEGY_REASON =
-  'No site-specific mapping matched; try Fetcher, then DynamicFetcher, then StealthyFetcher until content is extracted.';
+  'No site-specific mapping matched; try Fetcher, then StealthyFetcher until content is extracted.';
 
 export function siteStrategyMappingForUrl(url: string): SiteStrategyMapping | undefined {
   const hostname = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
@@ -38,12 +38,12 @@ export function buildScraplingShellCode(): string {
   return String.raw`
 import json
 import os
-from scrapling.fetchers import Fetcher, DynamicFetcher, StealthyFetcher
+from scrapling.fetchers import Fetcher, StealthyFetcher
 from scrapling.core.shell import Convertor
 
 url = os.environ['PI_WEBFETCH_URL']
 mode = os.environ.get('PI_WEBFETCH_MODE', 'markdown')
-strategies = json.loads(os.environ.get('PI_WEBFETCH_STRATEGIES', '["fetcher", "dynamic", "stealthy"]'))
+strategies = json.loads(os.environ.get('PI_WEBFETCH_STRATEGIES', '["fetcher", "stealthy"]'))
 outfile = os.environ['PI_WEBFETCH_OUTPUT']
 progress_prefix = '__PI_WEBFETCH_PROGRESS__'
 
@@ -71,8 +71,6 @@ def get_url(page):
 def fetch_with_strategy(strategy):
     if strategy == 'fetcher':
         return Fetcher.get(url)
-    if strategy == 'dynamic':
-        return DynamicFetcher.fetch(url, network_idle=True, wait=3000)
     if strategy == 'stealthy':
         return StealthyFetcher.fetch(url, network_idle=True, wait=3000)
     raise RuntimeError(f'Unknown strategy: {strategy}')

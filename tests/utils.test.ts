@@ -159,7 +159,7 @@ describe('readWebFetchSettings', () => {
 
 describe('strategy mapping', () => {
   it('uses the default sequential Scrapling priority for unmapped sites', () => {
-    assert.deepEqual(DEFAULT_STRATEGIES, ['fetcher', 'dynamic', 'stealthy']);
+    assert.deepEqual(DEFAULT_STRATEGIES, ['fetcher', 'stealthy']);
     assert.deepEqual(strategiesForUrl('https://example.com'), DEFAULT_STRATEGIES);
     assert.equal(siteStrategyMappingForUrl('https://example.com'), undefined);
     assert.match(strategyReasonForUrl('https://example.com'), /No site-specific mapping/);
@@ -870,10 +870,9 @@ describe('buildScraplingShellCode', () => {
   it('contains the Scrapling API calls from the guide', () => {
     const code = buildScraplingShellCode();
 
-    assert.match(code, /from scrapling\.fetchers import Fetcher, DynamicFetcher, StealthyFetcher/);
+    assert.match(code, /from scrapling\.fetchers import Fetcher, StealthyFetcher/);
     assert.match(code, /Convertor\._extract_content/);
     assert.match(code, /Fetcher\.get/);
-    assert.match(code, /DynamicFetcher\.fetch/);
     assert.match(code, /StealthyFetcher\.fetch/);
     assert.match(code, /network_idle=True/);
     assert.match(code, /wait=3000/);

@@ -24,7 +24,7 @@ scrapling shell -L warning -c "..."
 Python 代码里会使用：
 
 ```python
-from scrapling.fetchers import Fetcher, DynamicFetcher, StealthyFetcher
+from scrapling.fetchers import Fetcher, StealthyFetcher
 from scrapling.core.shell import Convertor
 ```
 
@@ -88,19 +88,26 @@ Scrapling html -> Defuddle markdown
 
 ## 抓取策略
 
-Scrapling 有三种策略：
+Scrapling 0.5 之后只有两种策略：浏览器后端收敛到 patchright 一套，原来的 `DynamicFetcher`
+已被上游移除（见「为什么没有 `dynamic` 策略」）。
 
 | 策略 | Scrapling API | 说明 |
 |---|---|---|
 | `fetcher` | `Fetcher.get(url)` | 静态抓取，最快 |
-| `dynamic` | `DynamicFetcher.fetch(url, network_idle=True, wait=3000)` | 动态页面抓取 |
-| `stealthy` | `StealthyFetcher.fetch(url, network_idle=True, wait=3000)` | 更强的反检测抓取 |
+| `stealthy` | `StealthyFetcher.fetch(url, network_idle=True, wait=3000)` | 浏览器抓取 + 反检测 |
 
 默认顺序：
 
 ```text
-fetcher -> dynamic -> stealthy
+fetcher -> stealthy
 ```
+
+### 为什么没有 `dynamic` 策略
+
+Scrapling 0.4 的 `DynamicFetcher` 走纯 Playwright，`StealthyFetcher` 走 patchright。0.5
+把纯 Playwright 后端整个删掉，`DynamicFetcher` 与 `DynamicSession` 一并移除，浏览器抓取
+只剩 patchright。保留一个与 `stealthy` 等价的 `dynamic` 只会让同一个页面被同一个后端抓
+两次，因此这里直接把它从策略表里去掉。
 
 ### 站点特定映射
 
@@ -129,9 +136,6 @@ fetcher -> dynamic -> stealthy
 
 ```text
 fetcher html -> defuddle
-  如果失败：记录错误，继续 dynamic
-
-dynamic html -> defuddle
   如果失败：记录错误，继续 stealthy
 
 stealthy html -> defuddle
@@ -170,7 +174,7 @@ Scrapling 会产生以下 progress phase：
 
 | phase | message 示例 |
 |---|---|
-| `starting` | `starting scrapling shell (fetcher → dynamic → stealthy)` |
+| `starting` | `starting scrapling shell (fetcher → stealthy)` |
 | `trying` | `trying fetcher` |
 | `extracting` | `extracting markdown with fetcher` |
 | `success` | `fetcher succeeded` |
