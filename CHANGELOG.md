@@ -1,3 +1,14 @@
+# [3.0.0](https://github.com/jwu/pi-webfetch/compare/v2.1.0...v3.0.0) (2026-10-24)
+
+
+* feat!: drop the dynamic strategy for Scrapling 0.5 ([2335db9](https://github.com/jwu/pi-webfetch/commit/2335db904fb8acd8ff94fe0a519d7fb0b0c151bd))
+
+
+### BREAKING CHANGES
+
+* Scrapling >= 0.5 is now required; the `dynamic` strategy and
+its `Fetcher: dynamic` output are gone.
+
 # [2.1.0](https://github.com/jwu/pi-webfetch/compare/v2.0.0...v2.1.0) (2026-08-26)
 
 
