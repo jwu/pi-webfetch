@@ -1,3 +1,10 @@
+## [3.0.1](https://github.com/jwu/pi-webfetch/compare/v3.0.0...v3.0.1) (2026-11-21)
+
+
+### Bug Fixes
+
+* **tool:** 用本地 stringEnum 修复 schema 类型推导 ([61496c9](https://github.com/jwu/pi-webfetch/commit/61496c966ca58a3401c69c99f81c6a2b162678af))
+
 # [3.0.0](https://github.com/jwu/pi-webfetch/compare/v2.1.0...v3.0.0) (2026-10-24)
 
 
