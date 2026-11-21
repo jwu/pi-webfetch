@@ -1,5 +1,5 @@
 import type { Api, Model, ModelThinkingLevel, Usage, UserMessage } from '@earendil-works/pi-ai';
-import { clampThinkingLevel, StringEnum } from '@earendil-works/pi-ai';
+import { clampThinkingLevel } from '@earendil-works/pi-ai';
 import type { ExtensionAPI, ModelRegistry } from '@earendil-works/pi-coding-agent';
 import {
   DEFAULT_MAX_BYTES,
@@ -27,11 +27,21 @@ import {
   type WebFetchSettings,
 } from './types.js';
 
+/**
+ * 与 `@earendil-works/pi-ai` 的 StringEnum 等价，但返回本地 typebox 的 schema。
+ * pi-ai 的版本返回 pi-schema 的 Schema，和 `Type.Optional()` 混用会让 Static 推导
+ * 丢成 unknown；这里用 Type.Unsafe 保留字面量类型，运行时仍是 Google 兼容的
+ * `{ type: "string", enum: [...] }`。
+ */
+function stringEnum<T extends readonly string[]>(values: T, options?: { description?: string }) {
+  return Type.Unsafe<T[number]>({ type: 'string', enum: [...values], ...options });
+}
+
 const WebFetchParams = Type.Object({
   url: Type.String({
     description: 'HTTP or HTTPS URL to inspect and fetch.',
   }),
-  mode: Type.Optional(StringEnum(['markdown', 'html', 'text', 'json'] as const)),
+  mode: Type.Optional(stringEnum(['markdown', 'html', 'text', 'json'] as const)),
 });
 
 export interface WebFetchInput {
